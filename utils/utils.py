@@ -307,9 +307,10 @@ class FocalLoss(nn.Module):
 
 
 def compute_loss(p, targets, model):  # predictions, targets, model
+    #targets:[batch_idx,cls, gt_score,x,y,w,h]
     ft = torch.cuda.FloatTensor if p[0].is_cuda else torch.Tensor
     lcls, lbox, lobj = ft([0]), ft([0]), ft([0])
-    tcls, tbox, indices, anchor_vec = build_targets(model, targets)
+    tcls, tbox, indices, anchor_vec= build_targets(model, targets)
     h = model.hyp  # hyperparameters
     arc = model.arc  # # (default, uCE, uBCE) detection architectures
 
@@ -325,25 +326,29 @@ def compute_loss(p, targets, model):  # predictions, targets, model
 
     # Compute losses
     for i, pi in enumerate(p):  # layer index, layer predictions
-        b, a, gj, gi = indices[i]  # image, anchor, gridy, gridx
+        # b, a, gj, gi = indices[i]  # image, anchor, gridy, gridx
+        b, a, gj, gi, gt_score = indices[i]
         tobj = torch.zeros_like(pi[..., 0])  # target obj
 
         # Compute losses
         nb = len(b)
         if nb:  # number of targets
             ps = pi[b, a, gj, gi]  # prediction subset corresponding to targets
-            tobj[b, a, gj, gi] = 1.0  # obj
+            # tobj[b, a, gj, gi] = 1.0  # obj #todo: modify 1.0 to score for mixup
+            tobj[b, a, gj, gi] = gt_score
             # ps[:, 2:4] = torch.sigmoid(ps[:, 2:4])  # wh power loss (uncomment)
 
             # GIoU
             pxy = torch.sigmoid(ps[:, 0:2])  # pxy = pxy * s - (s - 1) / 2,  s = 1.5  (scale_xy)
             pbox = torch.cat((pxy, torch.exp(ps[:, 2:4]) * anchor_vec[i]), 1)  # predicted box
             giou = bbox_iou(pbox.t(), tbox[i], x1y1x2y2=False, GIoU=True)  # giou computation
-            lbox += (1.0 - giou).mean()  # giou loss
+            # lbox += (1.0 - giou).mean()  # giou loss
+            lbox += ((1.0 - giou)*gt_score).mean()  # giou loss, 乘gt_score
 
             if 'default' in arc and model.nc > 1:  # cls loss (only if multiple classes)
                 t = torch.zeros_like(ps[:, 5:])  # targets
-                t[range(nb), tcls[i]] = 1.0
+                # t[range(nb), tcls[i]] = 1.0
+                t[range(nb), tcls[i]] = gt_score  # TODO: add label_smooth here
                 lcls += BCEcls(ps[:, 5:], t)  # BCE
                 # lcls += CE(ps[:, 5:], tcls[i])  # CE
 
@@ -357,18 +362,25 @@ def compute_loss(p, targets, model):  # predictions, targets, model
             #     [file.write('%11.5g ' * 4 % tuple(x) + '\n') for x in torch.cat((txy[i], twh[i]), 1)]
 
         if 'default' in arc:  # separate obj and cls
+            # print('tcls size:',len(tcls)) # len(tcls)=3, because 3 yolo heads
+            # print('ps(pred subset) size:', ps.size())
+            # print('tobj(target object) size:',tobj.size())
+            # print('pi(layer prediction) size:',pi.size())
+            # print(pi[1,1,6,6,:])
             lobj += BCEobj(pi[..., 4], tobj)  # obj loss
 
         elif 'BCE' in arc:  # unified BCE (80 classes)
             t = torch.zeros_like(pi[..., 5:])  # targets
             if nb:
-                t[b, a, gj, gi, tcls[i]] = 1.0
+                # t[b, a, gj, gi, tcls[i]] = 1.0
+                t[b, a, gj, gi, tcls[i]] = gt_score
             lobj += BCE(pi[..., 5:], t)
 
         elif 'CE' in arc:  # unified CE (1 background + 80 classes)
             t = torch.zeros_like(pi[..., 0], dtype=torch.long)  # targets
             if nb:
-                t[b, a, gj, gi] = tcls[i] + 1
+                t[b, a, gj, gi] = tcls[i] + 1  # CE loss这里的实现：target的每个value是类别的index
+                # 所以可能不支持gt_score
             lcls += CE(pi[..., 4:].view(-1, model.nc + 1), t.view(-1))
 
     lbox *= h['giou']
@@ -379,7 +391,8 @@ def compute_loss(p, targets, model):  # predictions, targets, model
 
 
 def build_targets(model, targets):
-    # targets = [image, class, x, y, w, h]
+    # targets = [image_index_in_batch, class, x, y, w, h]
+    # todo: modify to: targets = [image_index_in_batch, class, gt_score, x, y, w, h]
 
     nt = len(targets)
     tcls, tbox, indices, av = [], [], [], []
@@ -393,7 +406,8 @@ def build_targets(model, targets):
 
         # iou of targets-anchors
         t, a = targets, []
-        gwh = t[:, 4:6] * ng
+        # gwh = t[:, 4:6] * ng #todo: for gt_score
+        gwh = t[:, 5:7] * ng
         if nt:
             iou = torch.stack([wh_iou(x, gwh) for x in anchor_vec], 0)
 
@@ -414,10 +428,14 @@ def build_targets(model, targets):
                 t, a, gwh = t[j], a[j], gwh[j]
 
         # Indices
-        b, c = t[:, :2].long().t()  # target image, class
-        gxy = t[:, 2:4] * ng  # grid x, y
+        # b, c = t[:, :2].long().t()  # target image, class
+        b, c= t[:, :2].long().t()  # target image, class, gt_score
+        gt_score=t[:, 2].half().t()  # target image, class, gt_score todo: half or float for apex
+        # gxy = t[:, 2:4] * ng  # grid x, y
+        gxy = t[:, 3:5] * ng  # grid x, y for target contain gt_score
         gi, gj = gxy.long().t()  # grid x, y indices
-        indices.append((b, a, gj, gi))
+        indices.append((b, a, gj, gi, gt_score)) #todo: mixup
+        #indices.append((b, a, gj, gi,gt_score))
 
         # GIoU
         gxy -= gxy.floor()  # xy
@@ -425,7 +443,7 @@ def build_targets(model, targets):
         av.append(anchor_vec[a])  # anchor vec
 
         # Class
-        tcls.append(c)
+        tcls.append(c)  # todo: maybe add cls score here
         if c.shape[0]:  # if any targets
             assert c.max() <= model.nc, 'Target classes exceed model classes'
 
@@ -669,17 +687,17 @@ def coco_single_class_labels(path='../coco/labels/train2014/', label_class=43):
             shutil.copyfile(src=img_file, dst='new/images/' + Path(file).name.replace('txt', 'jpg'))  # copy images
 
 
-def kmeans_targets(path='../coco/trainvalno5k.txt', n=9, img_size=512):  # from utils.utils import *; kmeans_targets()
+def kmeans_targets(path='../coco/trainvalno5k.txt', n=9, img_size=416):  # from utils.utils import *; kmeans_targets()
     # Produces a list of target kmeans suitable for use in *.cfg files
     from utils.datasets import LoadImagesAndLabels
     from scipy import cluster
 
     # Get label wh
-    dataset = LoadImagesAndLabels(path, augment=True, rect=True, cache_labels=True)
+    dataset = LoadImagesAndLabels(path, augment=True, rect=True, cache_labels=True) #todo: modify for gt_score
     for s, l in zip(dataset.shapes, dataset.labels):
         l[:, [1, 3]] *= s[0]  # normalized to pixels
         l[:, [2, 4]] *= s[1]
-        l[:, 1:] *= img_size / max(s) * random.uniform(0.99, 1.01)  # nominal img_size for training
+        l[:, 1:] *= img_size / max(s)  # nominal img_size for training
     wh = np.concatenate(dataset.labels, 0)[:, 3:5]  # wh from cxywh
 
     # Kmeans calculation
@@ -799,6 +817,7 @@ def plot_images(imgs, targets, paths=None, fname='images.jpg'):
     # Plots training images overlaid with targets
     imgs = imgs.cpu().numpy()
     targets = targets.cpu().numpy()
+    targets= np.delete(targets,2,1) # delete gt_score
     # targets = targets[targets[:, 1] == 21]  # plot only one class
 
     fig = plt.figure(figsize=(10, 10))
@@ -881,7 +900,7 @@ def plot_results(start=0, stop=0):  # from utils.utils import *; plot_results()
     fig, ax = plt.subplots(2, 5, figsize=(14, 7))
     ax = ax.ravel()
     s = ['GIoU', 'Objectness', 'Classification', 'Precision', 'Recall',
-         'val GIoU', 'val Objectness', 'val Classification', 'mAP@0.5', 'F1']
+         'val GIoU', 'val Objectness', 'val Classification', 'mAP', 'F1']
     for f in sorted(glob.glob('results*.txt') + glob.glob('../../Downloads/results*.txt')):
         results = np.loadtxt(f, usecols=[2, 3, 4, 8, 9, 12, 13, 14, 10, 11], ndmin=2).T
         n = results.shape[1]  # number of rows
@@ -902,7 +921,7 @@ def plot_results(start=0, stop=0):  # from utils.utils import *; plot_results()
 
 def plot_results_overlay(start=0, stop=0):  # from utils.utils import *; plot_results_overlay()
     # Plot training results files 'results*.txt', overlaying train and val losses
-    s = ['train', 'train', 'train', 'Precision', 'mAP@0.5', 'val', 'val', 'val', 'Recall', 'F1']  # legends
+    s = ['train', 'train', 'train', 'Precision', 'mAP', 'val', 'val', 'val', 'Recall', 'F1']  # legends
     t = ['GIoU', 'Objectness', 'Classification', 'P-R', 'mAP-F1']  # titles
     for f in sorted(glob.glob('results*.txt') + glob.glob('../../Downloads/results*.txt')):
         results = np.loadtxt(f, usecols=[2, 3, 4, 8, 9, 12, 13, 14, 10, 11], ndmin=2).T

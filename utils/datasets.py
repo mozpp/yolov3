@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import glob
 import math
 import os
@@ -17,7 +18,7 @@ from tqdm import tqdm
 from utils.utils import xyxy2xywh, xywh2xyxy
 
 img_formats = ['.bmp', '.jpg', '.jpeg', '.png', '.tif']
-vid_formats = ['.mov', '.avi', '.mp4']
+vid_formats = ['.mov', '.avi', '.mp4', '.mkv']
 
 # Get orientation exif tag
 for orientation in ExifTags.TAGS.keys():
@@ -276,7 +277,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         self.rect = False if image_weights else rect
 
         # Define labels
-        self.label_files = [x.replace('images', 'labels').replace(os.path.splitext(x)[-1], '.txt')
+        self.label_files = [x.replace('images', 'labels').replace('JPEGImages','yolo_labels').replace(os.path.splitext(x)[-1], '.txt')
                             for x in self.img_files]
 
         # Rectangular Training  https://github.com/ultralytics/yolov3/issues/232
@@ -478,15 +479,20 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                     labels[:, 1] = 1 - labels[:, 1]
 
             # random up-down flip
-            ud_flip = False
+            ud_flip = True  # acitve for topview
             if ud_flip and random.random() < 0.5:
                 img = np.flipud(img)
                 if nL:
                     labels[:, 2] = 1 - labels[:, 2]
 
-        labels_out = torch.zeros((nL, 6))
+        # labels_out = torch.zeros((nL, 6)) # todo: add gt_score to labels_out(i.e. targets)
+        labels_out = torch.zeros((nL, 7))  # add gt_score to labels_out(i.e. targets)
         if nL:
-            labels_out[:, 1:] = torch.from_numpy(labels)
+            # labels_out[:, 1:] = torch.from_numpy(labels)
+
+            labels_out[:, 1] = torch.from_numpy(labels[:, 0])  # cls
+            labels_out[:, 2] = 1  # gt_score
+            labels_out[:, 3:] = torch.from_numpy(labels[:, 1:])  # [x y w h]
 
         # Normalize
         img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
@@ -496,10 +502,10 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         return torch.from_numpy(img), labels_out, img_path, (h, w)
 
     @staticmethod
-    def collate_fn(batch):
+    def collate_fn(batch): # 静态方法：不需要自身对象的self和自身类的cls参数，调用无需实例化
         img, label, path, hw = list(zip(*batch))  # transposed
         for i, l in enumerate(label):
-            l[:, 0] = i  # add target image index for build_targets()
+            l[:, 0] = i  # add target image index for build_targets(), 为label添加batch里的index
         return torch.stack(img, 0), torch.cat(label, 0), path, hw
 
 
@@ -579,7 +585,7 @@ def load_mosaic(self, index):
                 with open(label_path, 'r') as f:
                     x = np.array([x.split() for x in f.read().splitlines()], dtype=np.float32)
 
-            labels = []
+            # labels = []  # fix issue #548
             if x.size > 0:
                 # Normalized xywh to pixel xyxy format
                 labels = x.copy()
@@ -587,8 +593,8 @@ def load_mosaic(self, index):
                 labels[:, 2] = h * (x[:, 2] - x[:, 4] / 2) + padh
                 labels[:, 3] = w * (x[:, 1] + x[:, 3] / 2) + padw
                 labels[:, 4] = h * (x[:, 2] + x[:, 4] / 2) + padh
-            labels4.append(labels)
 
+                labels4.append(labels) # fix issue #548
     if len(labels4):
         labels4 = np.concatenate(labels4, 0)
 
@@ -797,15 +803,6 @@ def convert_images2bmp():
             '/Users/glennjocher/PycharmProjects/', '../')
         with open(label_path.replace('5k', '5k_bmp'), 'w') as file:
             file.write(lines)
-
-
-def imagelist2folder(path='../data/sm3/out_test.txt'):  # from utils.datasets import *; imagelist2folder()
-    # Copies all the images in a text file (list of images) into a folder
-    create_folder(path[:-4])
-    with open(path, 'r') as f:
-        for line in f.read().splitlines():
-            os.system('cp "%s" %s' % (line, path[:-4]))
-            print(line)
 
 
 def create_folder(path='./new_folder'):

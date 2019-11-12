@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import argparse
 
 import torch.distributed as dist
@@ -24,7 +25,7 @@ results_file = 'results.txt'
 hyp = {'giou': 3.31,  # giou loss gain
        'cls': 42.4,  # cls loss gain
        'cls_pw': 1.0,  # cls BCELoss positive_weight
-       'obj': 40.0,  # obj loss gain (*=img_size/320 * 1.1 if img_size > 320)
+       'obj': 40.0,  # obj loss gain
        'obj_pw': 1.0,  # obj BCELoss positive_weight
        'iou_t': 0.213,  # iou training threshold
        'lr0': 0.00261,  # initial learning rate (SGD=1E-3, Adam=9E-5)
@@ -197,6 +198,7 @@ def train():
     # Dataloader
     dataloader = torch.utils.data.DataLoader(dataset,
                                              batch_size=batch_size,
+                                             # num_workers=min([os.cpu_count(), batch_size, 16]),
                                              num_workers=min([os.cpu_count(), batch_size, 16]),
                                              shuffle=not opt.rect,  # Shuffle=True unless rectangular training is used
                                              pin_memory=True,
@@ -236,7 +238,6 @@ def train():
             ni = i + nb * epoch  # number integrated batches (since train start)
             imgs = imgs.to(device)
             targets = targets.to(device)
-
             # Multi-Scale training
             if multi_scale:
                 if ni / accumulate % 10 == 0:  #  adjust (67% - 150%) every 10 batches
@@ -407,8 +408,8 @@ if __name__ == '__main__':
     parser.add_argument('--bucket', type=str, default='', help='gsutil bucket')
     parser.add_argument('--img-weights', action='store_true', help='select training images by weight')
     parser.add_argument('--cache-images', action='store_true', help='cache images for faster training')
-    parser.add_argument('--weights', type=str, default='weights/yolov3-spp.weights', help='initial weights')
-    parser.add_argument('--arc', type=str, default='default', help='yolo architecture')  # defaultpw, uCE, uBCE
+    parser.add_argument('--weights', type=str, default='weights/yolov3-spp.weights', help='initial weights')  # i.e. weights/darknet.53.conv.74
+    parser.add_argument('--arc', type=str, default='default', help='yolo architecture') # defaultpw, uCE, uBCE. uCE可能不支持gt_score
     parser.add_argument('--prebias', action='store_true', help='transfer-learn yolo biases prior to training')
     parser.add_argument('--name', default='', help='renames results.txt to results_name.txt if supplied')
     parser.add_argument('--device', default='', help='device id (i.e. 0 or 0,1) or cpu')
@@ -418,9 +419,6 @@ if __name__ == '__main__':
     opt.weights = last if opt.resume else opt.weights
     print(opt)
     device = torch_utils.select_device(opt.device, apex=mixed_precision)
-
-    # scale hyp['obj'] by img_size (evolved at 320)
-    hyp['obj'] *= opt.img_size / 320.
 
     tb_writer = None
     if not opt.evolve:  # Train normally

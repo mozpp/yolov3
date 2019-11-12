@@ -56,7 +56,7 @@ def test(cfg,
     seen = 0
     model.eval()
     coco91class = coco80_to_coco91_class()
-    s = ('%20s' + '%10s' * 6) % ('Class', 'Images', 'Targets', 'P', 'R', 'mAP@0.5', 'F1')
+    s = ('%20s' + '%10s' * 6) % ('Class', 'Images', 'Targets', 'P', 'R', 'mAP', 'F1')
     p, r, f1, mp, mr, map, mf1 = 0., 0., 0., 0., 0., 0., 0.
     loss = torch.zeros(3)
     jdict, stats, ap, ap_class = [], [], [], []
@@ -81,7 +81,9 @@ def test(cfg,
 
         # Statistics per image
         for si, pred in enumerate(output):
-            labels = targets[targets[:, 0] == si, 1:]
+            targets_ = targets[:, [True, True, False, True, True, True, True]]  # delete gt_score
+            # labels = targets[targets[:, 0] == si, 1:]
+            labels = targets_[targets_[:, 0] == si, 1:]
             nl = len(labels)
             tcls = labels[:, 0].tolist() if nl else []  # target class
             seen += 1

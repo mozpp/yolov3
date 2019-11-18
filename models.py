@@ -23,11 +23,12 @@ def create_modules(module_defs, img_size, arc):
             bn = int(mdef['batch_normalize'])
             filters = int(mdef['filters'])
             kernel_size = int(mdef['size'])
+            stride = int(mdef['stride']) if 'stride' in mdef else (int(mdef['stride_y']), int(mdef['stride_x']))
             pad = (kernel_size - 1) // 2 if int(mdef['pad']) else 0
             modules.add_module('Conv2d', nn.Conv2d(in_channels=output_filters[-1],
                                                    out_channels=filters,
                                                    kernel_size=kernel_size,
-                                                   stride=int(mdef['stride']),
+                                                   stride=stride,
                                                    padding=pad,
                                                    bias=not bn))
             if bn:
@@ -117,16 +118,15 @@ class Swish(nn.Module):
         super(Swish, self).__init__()
 
     def forward(self, x):
-        return x * torch.sigmoid(x)
+        return x.mul_(torch.sigmoid(x))
 
 
 class Mish(nn.Module):  # https://github.com/digantamisra98/Mish
-    # Applies the mish function element-wise: mish(x) = x * tanh(softplus(x)) = x * tanh(ln(1 + exp(x)))
     def __init__(self):
         super().__init__()
 
     def forward(self, x):
-        return x * torch.tanh(F.softplus(x))
+        return x.mul_(F.softplus(x).tanh())
 
 
 class YOLOLayer(nn.Module):
@@ -314,7 +314,7 @@ def load_darknet_weights(self, weights, cutoff=-1):
         self.version = np.fromfile(f, dtype=np.int32, count=3)  # (int32) version info: major, minor, revision
         self.seen = np.fromfile(f, dtype=np.int64, count=1)  # (int64) number of images seen during training
 
-        weights = np.fromfile(f, dtype=np.float32)  # The rest are weights
+        weights = np.fromfile(f, dtype=np.float32)  # the rest are weights
 
     ptr = 0
     for i, (mdef, module) in enumerate(zip(self.module_defs[:cutoff], self.module_list[:cutoff])):
@@ -429,6 +429,8 @@ def attempt_download(weights):
             gdrive_download(id='18xqvs_uwAqfTXp-LJCYLYNHBOcrwbrp0', name=weights)
         elif file == 'yolov3-tiny.conv.15':
             gdrive_download(id='140PnSedCsGGgu3rOD6Ez4oI6cdDzerLC', name=weights)
+        elif file == 'ultralytics49.pt':
+            gdrive_download(id='1GKy8hr0h41VlVX2QqURO9re7yKXhaPK7', name=weights)
 
         else:
             try:  # download from pjreddie.com

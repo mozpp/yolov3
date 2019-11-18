@@ -1,5 +1,5 @@
 # Start from Nvidia PyTorch image https://ngc.nvidia.com/catalog/containers/nvidia:pytorch
-FROM nvcr.io/nvidia/pytorch:19.08-py3
+FROM nvcr.io/nvidia/pytorch:19.10-py3
 
 # Install dependencies (pip or conda)
 RUN pip install -U gsutil
@@ -56,10 +56,10 @@ COPY . /usr/src/app
 # sudo nvidia-docker run --ipc=host --mount type=bind,source="$(pwd)"/coco,target=/usr/src/coco ultralytics/yolov3:v0 python3 train.py
 
 # Pull and Run with local directory access
-# export tag=ultralytics/yolov3:v0 && sudo docker pull $tag && sudo nvidia-docker run --ipc=host --mount type=bind,source="$(pwd)"/coco,target=/usr/src/coco $tag python3 train.py
+# export tag=ultralytics/yolov3:v0 && sudo docker pull $tag && sudo nvidia-docker run -it --ipc=host --mount type=bind,source="$(pwd)"/coco,target=/usr/src/coco $tag python3 train.py
 
 # Build and Push
-# export tag=ultralytics/yolov3:v0 && sudo docker build -t $tag . && docker push $tag
+# export tag=ultralytics/yolov3:v0 && sudo docker build -t $tag . && sudo docker push $tag
 
 # Kill all
 # sudo docker kill $(sudo docker ps -q)

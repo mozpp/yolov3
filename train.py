@@ -24,11 +24,11 @@ last = wdir + 'last.pt'
 best = wdir + 'best.pt'
 results_file = 'results.txt'
 
-# Hyperparameters (k-series, 53.3 mAP yolov3-spp-320) https://github.com/ultralytics/yolov3/issues/310
+# Hyperparameters (k-series, 57.7 mAP yolov3-spp-416) https://github.com/ultralytics/yolov3/issues/310
 hyp = {'giou': 3.31,  # giou loss gain
        'cls': 42.4,  # cls loss gain
        'cls_pw': 1.0,  # cls BCELoss positive_weight
-       'obj': 40.0,  # obj loss gain (*=img_size/320 * 1.1 if img_size > 320)
+       'obj': 64.0,  # obj loss gain (*=img_size/320 if img_size != 320)
        'obj_pw': 1.0,  # obj BCELoss positive_weight
        'iou_t': 0.213,  # iou training threshold
        'lr0': 0.00261,  # initial learning rate (SGD=1E-3, Adam=9E-5)
@@ -107,7 +107,7 @@ def train():
     best_fitness = float('inf')
     attempt_download(weights)
     if weights.endswith('.pt'):  # pytorch format
-        # possible weights are 'last.pt', 'yolov3-spp.pt', 'yolov3-tiny.pt' etc.
+        # possible weights are '*.pt', 'yolov3-spp.pt', 'yolov3-tiny.pt' etc.
         if opt.bucket:
             os.system('gsutil cp gs://%s/last.pt %s' % (opt.bucket, last))  # download from bucket
         chkpt = torch.load(weights, map_location=device)
@@ -133,7 +133,7 @@ def train():
         del chkpt
 
     elif len(weights) > 0:  # darknet format
-        # possible weights are 'yolov3.weights', 'yolov3-tiny.conv.15',  'darknet53.conv.74' etc.
+        # possible weights are '*.weights', 'yolov3-tiny.conv.15',  'darknet53.conv.74' etc.
         cutoff = load_darknet_weights(model, weights)
 
     if opt.transfer or opt.prebias:  # transfer learning edge (yolo) layers
@@ -370,7 +370,7 @@ def train():
     # end training
     if len(opt.name) and not opt.prebias:
         os.rename('results.txt', 'results_%s.txt' % opt.name)
-        os.rename(wdir + 'last.pt', wdir + 'last_%s.pt' % opt.name)
+        os.rename(wdir + 'last.pt', wdir + 'last_%s.pt' % opt.name) if os.path.exists(wdir + 'last.pt') else None
         os.rename(wdir + 'best.pt', wdir + 'best_%s.pt' % opt.name) if os.path.exists(wdir + 'best.pt') else None
     plot_results()  # save as results.png
     print('%g epochs completed in %.3f hours.\n' % (epoch - start_epoch + 1, (time.time() - t0) / 3600))
@@ -378,8 +378,8 @@ def train():
     torch.cuda.empty_cache()
 
     # save to cloud
-    # os.system(gsutil cp results.txt gs://...)
-    # os.system(gsutil cp weights/best.pt gs://...)
+    # os.system('gsutil cp results.txt gs://...')
+    # os.system('gsutil cp weights/best.pt gs://...')
 
     return results
 
@@ -423,8 +423,8 @@ if __name__ == '__main__':
     print(opt)
     device = torch_utils.select_device(opt.device, apex=mixed_precision)
 
-    # scale hyp['obj'] by img_size (evolved at 320)
-    hyp['obj'] *= opt.img_size / 320.
+    # scale hyp['obj'] by img_size (evolved at 512)
+    hyp['obj'] *= opt.img_size / 512.
 
     tb_writer = None
     if not opt.evolve:  # Train normally

@@ -450,6 +450,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
             # Augment imagespace
             g = 0.0 if mosaic else 1.0  # do not augment mosaics
+            g=1
             hyp = self.hyp
             img, labels = random_affine(img, labels,
                                         degrees=hyp['degrees'] * g,
@@ -611,6 +612,21 @@ def load_mosaic(self, index):
     if len(labels4):
         labels4[:, 1:] -= a
 
+        # # reject warped points outside of image
+        labels4_tmp=labels4.copy()
+        area0 = (labels4[:, 3] - labels4[:, 1]) * (labels4[:, 4] - labels4[:, 2])
+        labels4_tmp[:, [2, 4]] = labels4_tmp[:, [2, 4]].clip(0, s)
+        labels4_tmp[:, [1, 3]] = labels4_tmp[:, [1, 3]].clip(0, s)
+        w = labels4_tmp[:, 3] - labels4_tmp[:, 1]
+        h = labels4_tmp[:, 4] - labels4_tmp[:, 2]
+        area = w * h
+
+        ar = np.maximum(w / (h + 1e-16), h / (w + 1e-16))
+        i = (w > 2) & (h > 2) & (area / (area0 + 1e-16) > 0.1) & (ar < 10)
+        # i = (w > 2) & (h > 2) & (ar < 10)
+
+        labels4 = labels4_tmp[i]
+
     return img4, labels4
 
 
@@ -662,7 +678,7 @@ def random_affine(img, targets=(), degrees=10, translate=.1, scale=.1, shear=10)
     # Rotation and Scale
     R = np.eye(3)
     a = random.uniform(-degrees, degrees)
-    # a += random.choice([-180, -90, 0, 90])  # add 90deg rotations to small rotations
+    a += random.choice([-180, -90, 0, 90])  # add 90deg rotations to small rotations
     s = random.uniform(1 - scale, 1 + scale)
     R[:2] = cv2.getRotationMatrix2D(angle=a, center=(img.shape[1] / 2, img.shape[0] / 2), scale=s)
 
@@ -713,6 +729,7 @@ def random_affine(img, targets=(), degrees=10, translate=.1, scale=.1, shear=10)
         area0 = (targets[:, 3] - targets[:, 1]) * (targets[:, 4] - targets[:, 2])
         ar = np.maximum(w / (h + 1e-16), h / (w + 1e-16))
         i = (w > 4) & (h > 4) & (area / (area0 + 1e-16) > 0.1) & (ar < 10)
+        # i = (w > 1) & (h > 1) & (area / (area0 + 1e-16) > 0.1) & (ar < 10)
 
         targets = targets[i]
         targets[:, 1:5] = xy[i]

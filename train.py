@@ -39,7 +39,7 @@ hyp = {'giou': 3.31,  # giou loss gain
        'hsv_h': 0.0103,  # image HSV-Hue augmentation (fraction)
        'hsv_s': 0.691,  # image HSV-Saturation augmentation (fraction)
        'hsv_v': 0.433,  # image HSV-Value augmentation (fraction)
-       'degrees': 1.43,  # image rotation (+/- deg)
+       'degrees': 1.43,  # image rotation (+/- deg) default=1.43
        'translate': 0.0663,  # image translation (+/- fraction)
        'scale': 0.11,  # image scale (+/- gain)
        'shear': 0.384}  # image shear (+/- deg)

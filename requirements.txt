@@ -1,7 +1,7 @@
 # pip3 install -U -r requirements.txt
 numpy
 opencv-python
-torch >= 1.2
+torch >= 1.3
 matplotlib
 pycocotools
 tqdm
@@ -12,6 +12,6 @@ Pillow
 # Equivalent conda commands ----------------------------------------------------
 # conda update -n base -c defaults conda
 # conda install -yc anaconda future numpy opencv matplotlib tqdm pillow
-# conda install -yc conda-forge scikit-image tensorboard pycocotools
+# conda install -yc conda-forge scikit-image pycocotools tensorboard
 # conda install -yc spyder-ide spyder-line-profiler
 # conda install -yc pytorch pytorch torchvision

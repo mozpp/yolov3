@@ -36,7 +36,8 @@ def create_modules(module_defs, img_size, arc):
             if mdef['activation'] == 'leaky':  # TODO: activation study https://github.com/ultralytics/yolov3/issues/441
                 modules.add_module('activation', nn.LeakyReLU(0.1, inplace=True))
                 # modules.add_module('activation', nn.PReLU(num_parameters=1, init=0.10))
-                # modules.add_module('activation', Swish())
+            elif mdef['activation'] == 'swish':
+                modules.add_module('activation', Swish())
 
         elif mdef['type'] == 'maxpool':
             kernel_size = int(mdef['size'])
@@ -113,18 +114,29 @@ def create_modules(module_defs, img_size, arc):
     return module_list, routs
 
 
-class Swish(nn.Module):
-    def __init__(self):
-        super(Swish, self).__init__()
+class SwishImplementation(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, i):
+        ctx.save_for_backward(i)
+        return i * torch.sigmoid(i)
 
+    @staticmethod
+    def backward(ctx, grad_output):
+        sigmoid_i = torch.sigmoid(ctx.saved_variables[0])
+        return grad_output * (sigmoid_i * (1 + ctx.saved_variables[0] * (1 - sigmoid_i)))
+
+
+class MemoryEfficientSwish(nn.Module):
+    def forward(self, x):
+        return SwishImplementation.apply(x)
+
+
+class Swish(nn.Module):
     def forward(self, x):
         return x.mul_(torch.sigmoid(x))
 
 
 class Mish(nn.Module):  # https://github.com/digantamisra98/Mish
-    def __init__(self):
-        super().__init__()
-
     def forward(self, x):
         return x.mul_(F.softplus(x).tanh())
 
@@ -413,25 +425,26 @@ def convert(cfg='cfg/yolov3-spp.cfg', weights='weights/yolov3-spp.weights'):
 def attempt_download(weights):
     # Attempt to download pretrained weights if not found locally
 
-    msg = weights + ' missing, download from https://drive.google.com/drive/folders/1uxgUBemJVw9wZsdpboYbzUN4bcRhsuAI'
+    msg = weights + ' missing, download from https://drive.google.com/open?id=1LezFG5g3BCW6iYaV89B2i64cqEUZD7e0'
     if weights and not os.path.isfile(weights):
         file = Path(weights).name
 
         if file == 'yolov3-spp.weights':
-            gdrive_download(id='1oPCHKsM2JpM-zgyepQciGli9X0MTsJCO', name=weights)
+            gdrive_download(id='16lYS4bcIdM2HdmyJBVDOvt3Trx6N3W2R', name=weights)
+        elif file == 'yolov3.weights':
+            gdrive_download(id='1uTlyDWlnaqXcsKOktP5aH_zRDbfcDp-y', name=weights)
         elif file == 'yolov3-spp.pt':
-            gdrive_download(id='1vFlbJ_dXPvtwaLLOu-twnjK4exdFiQ73', name=weights)
+            gdrive_download(id='1f6Ovy3BSq2wYq4UfvFUpxJFNDFfrIDcR', name=weights)
         elif file == 'yolov3.pt':
-            gdrive_download(id='11uy0ybbOXA2hc-NJkJbbbkDwNX1QZDlz', name=weights)
+            gdrive_download(id='1SHNFyoe5Ni8DajDNEqgB2oVKBb_NoEad', name=weights)
         elif file == 'yolov3-tiny.pt':
-            gdrive_download(id='1qKSgejNeNczgNNiCn9ZF_o55GFk1DjY_', name=weights)
+            gdrive_download(id='10m_3MlpQwRtZetQxtksm9jqHrPTHZ6vo', name=weights)
         elif file == 'darknet53.conv.74':
-            gdrive_download(id='18xqvs_uwAqfTXp-LJCYLYNHBOcrwbrp0', name=weights)
+            gdrive_download(id='1WUVBid-XuoUBmvzBVUCBl_ELrzqwA8dJ', name=weights)
         elif file == 'yolov3-tiny.conv.15':
-            gdrive_download(id='140PnSedCsGGgu3rOD6Ez4oI6cdDzerLC', name=weights)
+            gdrive_download(id='1Bw0kCpplxUqyRYAJr9RY9SGnOJbo9nEj', name=weights)
         elif file == 'ultralytics49.pt':
-            gdrive_download(id='1GKy8hr0h41VlVX2QqURO9re7yKXhaPK7', name=weights)
-
+            gdrive_download(id='158g62Vs14E3aj7oPVPuEnNZMKFNgGyNq', name=weights)
         else:
             try:  # download from pjreddie.com
                 url = 'https://pjreddie.com/media/files/' + file
@@ -441,4 +454,6 @@ def attempt_download(weights):
                 print(msg)
                 os.system('rm ' + weights)  # remove partial downloads
 
+        if os.path.getsize(weights) < 5E6:  # weights < 5MB (too small), download failed
+            os.remove(weights)  # delete corrupted weightsfile
         assert os.path.exists(weights), msg  # download missing weights from Google Drive

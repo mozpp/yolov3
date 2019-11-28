@@ -306,11 +306,11 @@ class FocalLoss(nn.Module):
             return loss
 
 
-def compute_loss(p, targets, model):  # predictions, targets, model
+def compute_loss(p, targets, model, mixed_precision):  # predictions, targets, model
     #targets:[batch_idx,cls, gt_score,x,y,w,h]
     ft = torch.cuda.FloatTensor if p[0].is_cuda else torch.Tensor
     lcls, lbox, lobj = ft([0]), ft([0]), ft([0])
-    tcls, tbox, indices, anchor_vec= build_targets(model, targets)
+    tcls, tbox, indices, anchor_vec= build_targets(model, targets, mixed_precision)
     h = model.hyp  # hyperparameters
     arc = model.arc  # # (default, uCE, uBCE) detection architectures
 
@@ -380,7 +380,10 @@ def compute_loss(p, targets, model):  # predictions, targets, model
             t = torch.zeros_like(pi[..., 0], dtype=torch.long)  # targets
             if nb:
                 t[b, a, gj, gi] = tcls[i] + 1  # CE loss这里的实现：target的每个value是类别的index
-                # 所以可能不支持gt_score
+                # 所以可能不支持gt_score。
+                # todo:可以loss*gt_score
+                # CE = nn.CrossEntropyLoss(reduction='none')设置reduction为none，以分别输出loss;
+                # lcls+= mean(CE*gt_score)
             lcls += CE(pi[..., 4:].view(-1, model.nc + 1), t.view(-1))
 
     lbox *= h['giou']
@@ -390,7 +393,7 @@ def compute_loss(p, targets, model):  # predictions, targets, model
     return loss, torch.cat((lbox, lobj, lcls, loss)).detach()
 
 
-def build_targets(model, targets):
+def build_targets(model, targets, mixed_precision):
     # targets = [image_index_in_batch, class, x, y, w, h]
     # todo: modify to: targets = [image_index_in_batch, class, gt_score, x, y, w, h]
 
@@ -430,7 +433,10 @@ def build_targets(model, targets):
         # Indices
         # b, c = t[:, :2].long().t()  # target image, class
         b, c= t[:, :2].long().t()  # target image, class, gt_score
-        gt_score=t[:, 2].half().t()  # target image, class, gt_score todo: half or float for apex
+        if mixed_precision:
+            gt_score=t[:, 2].half().t()  # target image, class, gt_score
+        else:
+            gt_score = t[:, 2].t()  # target image, class, gt_score
         # gxy = t[:, 2:4] * ng  # grid x, y
         gxy = t[:, 3:5] * ng  # grid x, y for target contain gt_score
         gi, gj = gxy.long().t()  # grid x, y indices
@@ -603,7 +609,7 @@ def strip_optimizer(f='weights/last.pt'):  # from utils.utils import *; strip_op
     torch.save(x, f)
 
 
-def create_backbone(f='weights/last.pt'):  # from utils.utils import *; create_backbone()
+def create_backbone(f='weights/last.pt', backbone_path=''):  # from utils.utils import *; create_backbone()
     # create a backbone from a *.pt file
     x = torch.load(f, map_location=torch.device('cpu'))
     x['optimizer'] = None
@@ -614,7 +620,7 @@ def create_backbone(f='weights/last.pt'):  # from utils.utils import *; create_b
             p.requires_grad = True
         except:
             pass
-    torch.save(x, 'weights/backbone.pt')
+    torch.save(x, backbone_path)
 
 
 def coco_class_count(path='../coco/labels/train2014/'):
@@ -819,8 +825,10 @@ def plot_images(imgs, targets, paths=None, fname='images.jpg'):
     # Plots training images overlaid with targets
     imgs = imgs.cpu().numpy()
     targets = targets.cpu().numpy()
+    gt_socre=targets[:,[0,1,2]] # index,cls,gt_score
     targets= np.delete(targets,2,1) # delete gt_score
     # targets = targets[targets[:, 1] == 21]  # plot only one class
+    colors={}
 
     fig = plt.figure(figsize=(10, 10))
     bs, _, h, w = imgs.shape  # batch size, _, height, width
@@ -829,10 +837,17 @@ def plot_images(imgs, targets, paths=None, fname='images.jpg'):
 
     for i in range(bs):
         boxes = xywh2xyxy(targets[targets[:, 0] == i, 2:6]).T
+        gt_scores=gt_socre[gt_socre[:,0]==i]
         boxes[[0, 2]] *= w
         boxes[[1, 3]] *= h
         plt.subplot(ns, ns, i + 1).imshow(imgs[i].transpose(1, 2, 0))
         plt.plot(boxes[[0, 2, 2, 0, 0]], boxes[[1, 1, 3, 3, 1]], '.-')
+        for i_ in range(boxes.shape[1]):
+            label = int(gt_scores[i_, 1])
+            if label not in colors:
+                colors[label] = plt.get_cmap('hsv')(label / 5)
+            plt.text(boxes[0, i_], boxes[1, i_], '{:.3f}'.format(gt_scores[i_, 2]),
+                     bbox={'facecolor': colors[label], 'alpha': 0.5, 'pad': 0}, color='white')
         plt.axis('off')
         if paths is not None:
             s = Path(paths[i]).name

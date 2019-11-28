@@ -16,7 +16,7 @@ try:  # Mixed precision training https://github.com/NVIDIA/apex
 except:
     mixed_precision = False  # not installed
 
-wdir =os.path.join("weights","rotation")
+wdir =os.path.join("weights")
 if not os.path.exists(wdir):
     os.mkdir(wdir)
 wdir = wdir + os.sep  # weights dir
@@ -31,15 +31,15 @@ hyp = {'giou': 3.31,  # giou loss gain
        'obj': 64.0,  # obj loss gain (*=img_size/320 if img_size != 320)
        'obj_pw': 1.0,  # obj BCELoss positive_weight
        'iou_t': 0.213,  # iou training threshold
-       'lr0': 0.00261,  # initial learning rate (SGD=1E-3, Adam=9E-5)
+       'lr0': 0.001,  # initial learning rate (SGD=1E-3, Adam=9E-5) default=0.00261
        'lrf': -4.,  # final LambdaLR learning rate = lr0 * (10 ** lrf)
        'momentum': 0.949,  # SGD momentum
        'weight_decay': 0.000489,  # optimizer weight decay
        'fl_gamma': 0.5,  # focal loss gamma
-       'hsv_h': 0.0103,  # image HSV-Hue augmentation (fraction)
-       'hsv_s': 0.691,  # image HSV-Saturation augmentation (fraction)
-       'hsv_v': 0.433,  # image HSV-Value augmentation (fraction)
-       'degrees': 1.43,  # image rotation (+/- deg) default=1.43
+       'hsv_h': 0.5,  # image HSV-Hue augmentation (fraction) default=0.0103
+       'hsv_s': 0.5,  # image HSV-Saturation augmentation (fraction) default=0.691
+       'hsv_v': 0.5,  # image HSV-Value augmentation (fraction) default=0.433
+       'degrees': 0,  # image rotation (+/- deg) default=1.43
        'translate': 0.0663,  # image translation (+/- fraction)
        'scale': 0.11,  # image scale (+/- gain)
        'shear': 0.384}  # image shear (+/- deg)
@@ -168,7 +168,7 @@ def train():
     # for _ in range(epochs):
     #     scheduler.step()
     #     y.append(optimizer.param_groups[0]['lr'])
-    # plt.plot(y, label='LambdaLR')
+    # # plt.plot(y, label='LambdaLR')
     # plt.xlabel('epoch')
     # plt.ylabel('LR')
     # plt.tight_layout()
@@ -192,6 +192,7 @@ def train():
                                   img_size,
                                   batch_size,
                                   augment=True,
+                                  mix_up=opt.mix_up,
                                   hyp=hyp,  # augmentation hyperparameters
                                   rect=opt.rect,  # rectangular training
                                   image_weights=opt.img_weights,
@@ -237,8 +238,15 @@ def train():
 
         mloss = torch.zeros(4).to(device)  # mean losses
         pbar = tqdm(enumerate(dataloader), total=nb)  # progress bar
-        for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
+        for i, (imgs_ori, targets_ori, paths, _) in pbar:  # batch -------------------------------------------------------------
             ni = i + nb * epoch  # number integrated batches (since train start)
+            # mix_up, mix up
+            mixup_prob = 0.6 if epoch < epochs * 0.5 else 0.5 * (1 - epoch / (epochs-20))
+            if opt.mix_up and random.random()< mixup_prob:
+                imgs,targets= mix_up(imgs_ori,targets_ori)
+            else:
+                imgs, targets = imgs_ori, targets_ori
+            # imgs, targets = mix_up(imgs_ori, targets_ori)
             imgs = imgs.to(device)
             targets = targets.to(device)
             # Multi-Scale training
@@ -272,7 +280,7 @@ def train():
             pred = model(imgs)
 
             # Compute loss
-            loss, loss_items = compute_loss(pred, targets, model)
+            loss, loss_items = compute_loss(pred, targets, model, mixed_precision)
             if not torch.isfinite(loss):
                 print('WARNING: non-finite loss, ending training ', loss_items)
                 return results
@@ -318,7 +326,8 @@ def train():
                                               img_size=opt.img_size,
                                               model=model,
                                               conf_thres=0.001 if final_epoch and epoch > 0 else 0.1,  # 0.1 for speed
-                                              save_json=final_epoch and epoch > 0 and 'coco.data' in data)
+                                              save_json=final_epoch and epoch > 0 and 'coco.data' in data,
+                                              mixed_precision=mixed_precision)
 
         # Write epoch results
         with open(results_file, 'a') as f:
@@ -388,10 +397,31 @@ def prebias():
     # trains output bias layers for 1 epoch and creates new backbone
     if opt.prebias:
         train()  # transfer-learn yolo biases for 1 epoch
-        create_backbone(last)  # saved results as backbone.pt
+        create_backbone(last, wdir + 'backbone.pt')  # saved results as backbone.pt
         opt.weights = wdir + 'backbone.pt'  # assign backbone
         opt.prebias = False  # disable prebias
 
+def mix_up(imgs_ori,targets_ori):
+    batch=imgs_ori.size()[0]
+    imgs=torch.zeros_like(imgs_ori)
+    for index in range(batch):
+        index_mix = random.randint(0, batch - 1)
+        index_mix = (index_mix + 1) % (batch - 1) if index_mix == index else index_mix
+        lam = np.random.beta(1.5, 1.5)
+        imgs[index, :, :, :] = lam * imgs_ori[index, :, :, :] + (1 - lam) * imgs_ori[index_mix, :, :, :]
+        # print("img ori",imgs_ori.size())
+        # print("img",imgs.size())
+        targets_1=targets_ori[targets_ori[:,0]==index]
+        targets_2 = targets_ori[targets_ori[:, 0] == index_mix]
+        targets_1[:, 2] = lam
+        targets_2[:, 2] = 1 - lam
+        targets_1[:, 0] = index
+        targets_2[:, 0] = index
+        if index == 0:
+            targets = np.concatenate([targets_1, targets_2])
+        else:
+            targets = np.concatenate([targets, targets_1, targets_2])
+    return imgs, torch.from_numpy(targets)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -418,6 +448,7 @@ if __name__ == '__main__':
     parser.add_argument('--device', default='', help='device id (i.e. 0 or 0,1) or cpu')
     parser.add_argument('--adam', action='store_true', help='use adam optimizer')
     parser.add_argument('--var', type=float, help='debug variable')
+    parser.add_argument('--mix_up', action='store_true', help='mix_up')
     opt = parser.parse_args()
     opt.weights = last if opt.resume else opt.weights
     print(opt)
@@ -433,6 +464,14 @@ if __name__ == '__main__':
             from torch.utils.tensorboard import SummaryWriter
 
             tb_writer = SummaryWriter()
+
+            # write opt
+            import six
+            str_opt = ""
+            for arg, value in sorted(six.iteritems(vars(opt))):
+                str_opt += '{}={}  \n'.format(arg, value)
+            tb_writer.add_text('opt', str_opt, 1)
+
         except:
             pass
 

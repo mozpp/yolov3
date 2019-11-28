@@ -17,7 +17,8 @@ def test(cfg,
          conf_thres=0.001,
          nms_thres=0.5,
          save_json=False,
-         model=None):
+         model=None,
+         mixed_precision=False):
     # Initialize/load model and set device
     if model is None:
         device = torch_utils.select_device(opt.device)
@@ -74,7 +75,7 @@ def test(cfg,
 
         # Compute loss
         if hasattr(model, 'hyp'):  # if model has loss hyperparameters
-            loss += compute_loss(train_out, targets, model)[1][:3].cpu()  # GIoU, obj, cls
+            loss += compute_loss(train_out, targets, model, mixed_precision)[1][:3].cpu()  # GIoU, obj, cls
 
         # Run NMS
         output = non_max_suppression(inf_out, conf_thres=conf_thres, nms_thres=nms_thres)

@@ -25,6 +25,23 @@ for orientation in ExifTags.TAGS.keys():
     if ExifTags.TAGS[orientation] == 'Orientation':
         break
 
+def random_interp(img, size, interp=None):
+    interp_method = [
+        cv2.INTER_NEAREST,
+        cv2.INTER_LINEAR,
+        cv2.INTER_AREA,
+        cv2.INTER_CUBIC,
+        cv2.INTER_LANCZOS4,
+        ]
+    if not interp or interp not in interp_method:
+        interp = interp_method[random.randint(0, len(interp_method) - 1)]
+    h, w, _ = img.shape
+    im_scale_x = size[0] / float(w)
+    im_scale_y = size[1] / float(h)
+    img = cv2.resize(img, None, None, fx=im_scale_x, fy=im_scale_y,
+                     interpolation=interp)
+    return img
+
 
 def exif_size(img):
     # Returns exif-corrected PIL size
@@ -256,7 +273,7 @@ class LoadStreams:  # multiple IP or RTSP cameras
 
 
 class LoadImagesAndLabels(Dataset):  # for training/testing
-    def __init__(self, path, img_size=416, batch_size=16, augment=False, hyp=None, rect=True, image_weights=False,
+    def __init__(self, path, img_size=416, batch_size=16, augment=False, mix_up=False, hyp=None, rect=True, image_weights=False,
                  cache_labels=False, cache_images=False):
         path = str(Path(path))  # os-agnostic
         with open(path, 'r') as f:
@@ -272,6 +289,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         self.batch = bi  # batch index of image
         self.img_size = img_size
         self.augment = augment
+        self.mix_up = mix_up
         self.hyp = hyp
         self.image_weights = image_weights
         self.rect = False if image_weights else rect
@@ -375,14 +393,15 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
         # Cache images into memory for faster training (~5GB)
         if cache_images and augment:  # if training
-            for i in tqdm(range(min(len(self.img_files), 10000)), desc='Reading images'):  # max 10k images
+            for i in tqdm(range(min(len(self.img_files), 1000)), desc='Reading images'):  # max 10k images
                 img_path = self.img_files[i]
                 img = cv2.imread(img_path)  # BGR
                 assert img is not None, 'Image Not Found ' + img_path
                 r = self.img_size / max(img.shape)  # size ratio
                 if self.augment and r < 1:  # if training (NOT testing), downsize to inference shape
                     h, w = img.shape[:2]
-                    img = cv2.resize(img, (int(w * r), int(h * r)), interpolation=cv2.INTER_LINEAR)  # or INTER_AREA
+                    # img = cv2.resize(img, (int(w * r), int(h * r)), interpolation=cv2.INTER_LINEAR)  # or INTER_AREA
+                    img = random_interp(img, (int(w * r), int(h * r)))
                 self.imgs[i] = img
 
         # Detect corrupted images https://medium.com/joelthchao/programmatically-detect-corrupted-image-8c1b2006c3d3
@@ -404,7 +423,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
     #     #self.shuffled_vector = np.random.permutation(self.nF) if self.augment else np.arange(self.nF)
     #     return self
 
-    def __getitem__(self, index):
+    def augment_collection(self, index):
         if self.image_weights:
             index = self.indices[index]
 
@@ -412,7 +431,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         label_path = self.label_files[index]
 
         mosaic = True and self.augment  # load 4 images at a time into a mosaic (only during training)
-        if mosaic:
+        if mosaic and random.random() < 0.1:  # modify: add random to mosaic
             # Load mosaic
             img, labels = load_mosaic(self, index)
             h, w = img.shape[:2]
@@ -487,20 +506,39 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                     labels[:, 2] = 1 - labels[:, 2]
 
         # labels_out = torch.zeros((nL, 6)) # todo: add gt_score to labels_out(i.e. targets)
-        labels_out = torch.zeros((nL, 7))  # add gt_score to labels_out(i.e. targets)
+        labels_out = np.zeros((nL, 7),dtype='float32')  # add gt_score to labels_out(i.e. targets)
         if nL:
             # labels_out[:, 1:] = torch.from_numpy(labels)
 
-            labels_out[:, 1] = torch.from_numpy(labels[:, 0])  # cls
+            labels_out[:, 1] = (labels[:, 0])  # cls
             labels_out[:, 2] = 1  # gt_score
-            labels_out[:, 3:] = torch.from_numpy(labels[:, 1:])  # [x y w h]
+            labels_out[:, 3:] = (labels[:, 1:])  # [x y w h]
 
         # Normalize
         img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
         img = np.ascontiguousarray(img, dtype=np.float32)  # uint8 to float32
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
 
-        return torch.from_numpy(img), labels_out, img_path, (h, w)
+        return img, labels_out, img_path, (h, w)
+
+    def __getitem__(self, index):
+        img_ori, labels_out_ori, img_path, (h, w) = self.augment_collection(index)
+
+        #mixup, mix_up
+        if random.random() < 0.5 and self.augment and self.mix_up:
+        # if 0:
+            index_mix = random.randint(0, len(self.label_files) - 2)
+            index_mix = index_mix + 1 if index_mix == index else index_mix
+            img_mix, labels_out_mix, _, _ = self.augment_collection(index_mix)
+            lam = np.random.beta(1.5, 1.5)
+            img = lam * img_ori + (1 - lam) * img_mix
+            labels_out_ori[:, 2] = lam
+            labels_out_mix[:, 2] = 1 - lam
+            labels_out=np.concatenate([labels_out_ori,labels_out_mix])
+        else:
+            img, labels_out = img_ori, labels_out_ori
+
+        return torch.from_numpy(img), torch.from_numpy(labels_out), img_path, (h, w)
 
     @staticmethod
     def collate_fn(batch): # 静态方法：不需要自身对象的self和自身类的cls参数，调用无需实例化
@@ -520,7 +558,8 @@ def load_image(self, index):
         r = self.img_size / max(img.shape)  # size ratio
         if self.augment:  # if training (NOT testing), downsize to inference shape
             h, w = img.shape[:2]
-            img = cv2.resize(img, (int(w * r), int(h * r)), interpolation=cv2.INTER_LINEAR)  # _LINEAR fastest
+            # img = cv2.resize(img, (int(w * r), int(h * r)), interpolation=cv2.INTER_LINEAR)  # _LINEAR fastest
+            img = random_interp(img, (int(w * r), int(h * r)))
     return img
 
 
@@ -622,7 +661,8 @@ def load_mosaic(self, index):
         area = w * h
 
         ar = np.maximum(w / (h + 1e-16), h / (w + 1e-16))
-        i = (w > 2) & (h > 2) & (area / (area0 + 1e-16) > 0.1) & (ar < 10)
+        i = (w > 2) & (h > 2) & (area / (area0 + 1e-16) > 0.45) & (ar < 10)
+        # todo: modify ratio of area/area0, default=0.1
         # i = (w > 2) & (h > 2) & (ar < 10)
 
         labels4 = labels4_tmp[i]

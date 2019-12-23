@@ -9,6 +9,7 @@ import test  # import test.py to get mAP after each epoch
 from models import *
 from utils.datasets import *
 from utils.utils import *
+from utils.prune_utils import *
 
 mixed_precision = True
 try:  # Mixed precision training https://github.com/NVIDIA/apex
@@ -16,7 +17,7 @@ try:  # Mixed precision training https://github.com/NVIDIA/apex
 except:
     mixed_precision = False  # not installed
 
-wdir =os.path.join("weights")
+wdir = os.path.join("weights")
 if not os.path.exists(wdir):
     os.mkdir(wdir)
 wdir = wdir + os.sep  # weights dir
@@ -186,6 +187,17 @@ def train():
         model = torch.nn.parallel.DistributedDataParallel(model, find_unused_parameters=True)
         model.yolo_layers = model.module.yolo_layers  # move yolo layer indices to top level
 
+    # 获得要剪枝的层
+    if opt.prune == 0:
+        print('normal sparse training ')
+        _, _, prune_idx = parse_module_defs(model)
+    elif opt.prune == 1:
+        print('shortcut sparse training')
+        _, _, prune_idx, _, _ = parse_module_defs2(model)
+    elif opt.prune == 2:
+        print('tiny yolo normal sparse traing')
+        _, _, prune_idx = parse_module_defs3(model)
+
     # Dataset
     dataset = LoadImagesAndLabels(train_path,
                                   img_size,
@@ -221,7 +233,10 @@ def train():
     print('Starting %s for %g epochs...' % ('prebias' if opt.prebias else 'training', epochs))
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
-        print(('\n' + '%10s' * 8) % ('Epoch', 'gpu_mem', 'GIoU', 'obj', 'cls', 'total', 'targets', 'img_size'))
+        print(('\n' + '%10s' * 9) % ('Epoch', 'gpu_mem', 'GIoU', 'obj', 'cls', 'total', 'targets', 'img_size', 'sum_γ'))
+
+        # 稀疏化标志
+        sr_flag = get_sr_flag(epoch, opt.sr)
 
         # Freeze backbone at epoch 0, unfreeze at epoch 1 (optional)
         freeze_backbone = False
@@ -237,13 +252,15 @@ def train():
             dataset.indices = random.choices(range(dataset.n), weights=image_weights, k=dataset.n)  # rand weighted idx
 
         mloss = torch.zeros(4).to(device)  # mean losses
+        mgamma = torch.zeros(1).to(device)  # mean gamma
         pbar = tqdm(enumerate(dataloader), total=nb)  # progress bar
-        for i, (imgs_ori, targets_ori, paths, _) in pbar:  # batch -------------------------------------------------------------
+        for i, (
+        imgs_ori, targets_ori, paths, _) in pbar:  # batch -------------------------------------------------------------
             ni = i + nb * epoch  # number integrated batches (since train start)
             # mix_up, mix up
-            mixup_prob = 0.8 if epoch < epochs * 0.7 else 0.8 * (1 - epoch / (epochs-20))
-            if opt.mix_up and random.random()< mixup_prob:
-                imgs,targets= mix_up(imgs_ori,targets_ori)
+            mixup_prob = 0.8 if epoch < epochs * 0.7 else 0.8 * (1 - epoch / (epochs - 20))
+            if opt.mix_up and random.random() < mixup_prob:
+                imgs, targets = mix_up(imgs_ori, targets_ori)
             else:
                 imgs, targets = imgs_ori, targets_ori
             # imgs, targets = mix_up(imgs_ori, targets_ori)
@@ -295,6 +312,12 @@ def train():
             else:
                 loss.backward()
 
+            # 对要剪枝层的γ参数稀疏化,就是给BN的gamma加L1 loss
+            if hasattr(model, 'module'):
+                sum_gamma = BNOptimizer.updateBN(sr_flag, model.module.module_list, opt.s, prune_idx)
+            else:
+                sum_gamma = BNOptimizer.updateBN(sr_flag, model.module_list, opt.s, prune_idx)
+
             # Accumulate gradient for x batches before optimizing
             if ni % accumulate == 0:
                 optimizer.step()
@@ -302,9 +325,11 @@ def train():
 
             # Print batch results
             mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
+            if sr_flag:
+                mgamma = (mgamma * i + sum_gamma) / (i + 1)  # update mean gamma
             mem = torch.cuda.memory_cached() / 1E9 if torch.cuda.is_available() else 0  # (GB)
-            s = ('%10s' * 2 + '%10.3g' * 6) % (
-                '%g/%g' % (epoch, epochs - 1), '%.3gG' % mem, *mloss, len(targets), img_size)
+            s = ('%10s' * 2 + '%10.3g' * 7) % (
+                '%g/%g' % (epoch, epochs - 1), '%.3gG' % mem, *mloss, len(targets), img_size, *mgamma)
             pbar.set_description(s)
 
             # end batch ------------------------------------------------------------------------------------------------
@@ -337,9 +362,10 @@ def train():
 
         # Write Tensorboard results
         if tb_writer:
-            x = list(mloss) + list(results)
+            x = list(mloss) + list(results) + list(mgamma)
             titles = ['GIoU', 'Objectness', 'Classification', 'Train loss',
-                      'Precision', 'Recall', 'mAP', 'F1', 'val GIoU', 'val Objectness', 'val Classification']
+                      'Precision', 'Recall', 'mAP', 'F1', 'val GIoU', 'val Objectness', 'val Classification',
+                      'sum_gamma']
             for xi, title in zip(x, titles):
                 tb_writer.add_scalar(title, xi, epoch)
 
@@ -407,9 +433,10 @@ def prebias():
         opt.prebias = False  # disable prebias
         opt.img_weights = a  # reset settings
 
-def mix_up(imgs_ori,targets_ori):
-    batch=imgs_ori.size()[0]
-    imgs=torch.zeros_like(imgs_ori)
+
+def mix_up(imgs_ori, targets_ori):
+    batch = imgs_ori.size()[0]
+    imgs = torch.zeros_like(imgs_ori)
     for index in range(batch):
         index_mix = random.randint(0, batch - 1)
         index_mix = (index_mix + 1) % (batch - 1) if index_mix == index else index_mix
@@ -417,7 +444,7 @@ def mix_up(imgs_ori,targets_ori):
         imgs[index, :, :, :] = lam * imgs_ori[index, :, :, :] + (1 - lam) * imgs_ori[index_mix, :, :, :]
         # print("img ori",imgs_ori.size())
         # print("img",imgs.size())
-        targets_1=targets_ori[targets_ori[:,0]==index]
+        targets_1 = targets_ori[targets_ori[:, 0] == index]
         targets_2 = targets_ori[targets_ori[:, 0] == index_mix]
         targets_1[:, 2] = lam
         targets_2[:, 2] = 1 - lam
@@ -428,6 +455,7 @@ def mix_up(imgs_ori,targets_ori):
         else:
             targets = np.concatenate([targets, targets_1, targets_2])
     return imgs, torch.from_numpy(targets)
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -447,14 +475,22 @@ if __name__ == '__main__':
     parser.add_argument('--bucket', type=str, default='', help='gsutil bucket')
     parser.add_argument('--img-weights', action='store_true', help='select training images by weight')
     parser.add_argument('--cache-images', action='store_true', help='cache images for faster training')
-    parser.add_argument('--weights', type=str, default='weights/yolov3-spp.weights', help='initial weights')  # i.e. weights/darknet.53.conv.74
-    parser.add_argument('--arc', type=str, default='default', help='yolo architecture')  # defaultpw, uCE, uBCE. (uCE可能不支持gt_score)
+    parser.add_argument('--weights', type=str, default='weights/yolov3-spp.weights',
+                        help='initial weights')  # i.e. weights/darknet.53.conv.74
+    parser.add_argument('--arc', type=str, default='default',
+                        help='yolo architecture')  # defaultpw, uCE, uBCE. (uCE可能不支持gt_score)
     parser.add_argument('--prebias', action='store_true', help='transfer-learn yolo biases prior to training')
     parser.add_argument('--name', default='', help='renames results.txt to results_name.txt if supplied')
     parser.add_argument('--device', default='', help='device id (i.e. 0 or 0,1 or cpu)')
     parser.add_argument('--adam', action='store_true', help='use adam optimizer')
     parser.add_argument('--var', type=float, help='debug variable')
     parser.add_argument('--mix_up', action='store_true', help='mix_up')
+    # slim
+    parser.add_argument('--sparsity-regularization', '-sr', dest='sr', action='store_true',
+                        help='train with channel sparsity regularization')
+    parser.add_argument('--s', type=float, default=0.001, help='scale sparse rate')
+    parser.add_argument('--prune', type=int, default=0,
+                        help='0:normal prune or regular prune 1:shortcut prune 2:tiny prune')  #adapt normal prune first
     opt = parser.parse_args()
     opt.weights = last if opt.resume else opt.weights
     print(opt)
@@ -475,6 +511,7 @@ if __name__ == '__main__':
 
             # write opt
             import six
+
             str_opt = ""
             for arg, value in sorted(six.iteritems(vars(opt))):
                 str_opt += '{}={}  \n'.format(arg, value)

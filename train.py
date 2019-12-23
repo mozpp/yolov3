@@ -39,9 +39,9 @@ hyp = {'giou': 3.31,  # giou loss gain
        'hsv_h': 0.5,  # image HSV-Hue augmentation (fraction) default=0.0103
        'hsv_s': 0.5,  # image HSV-Saturation augmentation (fraction) default=0.691
        'hsv_v': 0.5,  # image HSV-Value augmentation (fraction) default=0.433
-       'degrees': 0,  # image rotation (+/- deg) default=1.43
-       'translate': 0.0663,  # image translation (+/- fraction)
-       'scale': 0.11,  # image scale (+/- gain)
+       'degrees': 1.43,  # image rotation (+/- deg) default=1.43
+       'translate': 0.0663,  # image translation (+/- fraction) default=0.0663
+       'scale': 0.5,  # image scale (+/- gain) default=0.11
        'shear': 0.384}  # image shear (+/- deg)
 
 # Overwrite hyp with hyp*.txt (optional)
@@ -67,7 +67,7 @@ def train():
     # Initialize
     init_seeds()
     if opt.multi_scale:
-        img_sz_min = round(img_size / 32 / 1.5)
+        img_sz_min = round(img_size / 32 / 1.2)
         img_sz_max = round(img_size / 32 * 1.5)
         img_size = img_sz_max * 32  # initiate with maximum multi_scale size
         print('Using multi-scale %g - %g' % (img_sz_min * 32, img_size))
@@ -202,7 +202,7 @@ def train():
     batch_size = min(batch_size, len(dataset))
     dataloader = torch.utils.data.DataLoader(dataset,
                                              batch_size=batch_size,
-                                             num_workers=min([os.cpu_count(), batch_size if batch_size > 1 else 0, 16]),
+                                             num_workers=min([os.cpu_count(), batch_size if batch_size > 1 else 0, 8]),
                                              shuffle=not opt.rect,  # Shuffle=True unless rectangular training is used
                                              pin_memory=True,
                                              collate_fn=dataset.collate_fn)
@@ -241,7 +241,7 @@ def train():
         for i, (imgs_ori, targets_ori, paths, _) in pbar:  # batch -------------------------------------------------------------
             ni = i + nb * epoch  # number integrated batches (since train start)
             # mix_up, mix up
-            mixup_prob = 0.6 if epoch < epochs * 0.5 else 0.5 * (1 - epoch / (epochs-20))
+            mixup_prob = 0.8 if epoch < epochs * 0.7 else 0.8 * (1 - epoch / (epochs-20))
             if opt.mix_up and random.random()< mixup_prob:
                 imgs,targets= mix_up(imgs_ori,targets_ori)
             else:
@@ -252,29 +252,29 @@ def train():
             # Multi-Scale training
             if opt.multi_scale:
                 if ni / accumulate % 10 == 0:  #  adjust (67% - 150%) every 10 batches
-                    img_size = random.randrange(img_sz_min, img_sz_max + 1) * 32
+                    img_size = random.randrange(img_sz_min, img_sz_max) * 32
                 sf = img_size / max(imgs.shape[2:])  # scale factor
                 if sf != 1:
                     ns = [math.ceil(x * sf / 32.) * 32 for x in imgs.shape[2:]]  # new shape (stretched to 32-multiple)
                     imgs = F.interpolate(imgs, size=ns, mode='bilinear', align_corners=False)
 
             # Plot images with bounding boxes
-            if ni == 0:
+            if ni == 0 or ni == 10:
                 fname = 'train_batch%g.jpg' % i
                 plot_images(imgs=imgs, targets=targets, paths=paths, fname=fname)
                 if tb_writer:
                     tb_writer.add_image(fname, cv2.imread(fname)[:, :, ::-1], dataformats='HWC')
 
             # Hyperparameter burn-in
-            # n_burn = nb - 1  # min(nb // 5 + 1, 1000)  # number of burn-in batches
-            # if ni <= n_burn:
-            #     for m in model.named_modules():
-            #         if m[0].endswith('BatchNorm2d'):
-            #             m[1].momentum = 1 - i / n_burn * 0.99  # BatchNorm2d momentum falls from 1 - 0.01
-            #     g = (i / n_burn) ** 4  # gain rises from 0 - 1
-            #     for x in optimizer.param_groups:
-            #         x['lr'] = hyp['lr0'] * g
-            #         x['weight_decay'] = hyp['weight_decay'] * g
+            n_burn = nb - 1  # min(nb // 5 + 1, 1000)  # number of burn-in batches
+            if ni <= n_burn:
+                for m in model.named_modules():
+                    if m[0].endswith('BatchNorm2d'):
+                        m[1].momentum = 1 - i / n_burn * 0.99  # BatchNorm2d momentum falls from 1 - 0.01
+                g = (i / n_burn) ** 4  # gain rises from 0 - 1
+                for x in optimizer.param_groups:
+                    x['lr'] = hyp['lr0'] * g
+                    x['weight_decay'] = hyp['weight_decay'] * g
 
             # Run model
             pred = model(imgs)

@@ -246,3 +246,4 @@ fabric.properties
 /output
 /result
 detect_my.py
+/tool_mo.py

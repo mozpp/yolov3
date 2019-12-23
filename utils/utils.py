@@ -332,6 +332,7 @@ def compute_loss(p, targets, model, mixed_precision):  # predictions, targets, m
     BCEobj = nn.BCEWithLogitsLoss(pos_weight=ft([h['obj_pw']]))
     BCE = nn.BCEWithLogitsLoss()
     CE = nn.CrossEntropyLoss()  # weight=model.class_weights
+    CE2 = nn.CrossEntropyLoss(reduction='none')
 
     if 'F' in arc:  # add focal loss
         g = h['fl_gamma']
@@ -359,7 +360,7 @@ def compute_loss(p, targets, model, mixed_precision):  # predictions, targets, m
             lbox += ((1.0 - giou)*gt_score).mean()  # giou loss, 乘gt_score
 
             if 'default' in arc and model.nc > 1:  # cls loss (only if multiple classes)
-                t = torch.zeros_like(ps[:, 5:])  # targets
+                t = torch.zeros_like(ps[:, 5:])  # targets, target_size is related to gt
                 # t[range(nb), tcls[i]] = 1.0
                 t[range(nb), tcls[i]] = gt_score  # TODO: add label_smooth here
                 lcls += BCEcls(ps[:, 5:], t)  # BCE
@@ -391,13 +392,16 @@ def compute_loss(p, targets, model, mixed_precision):  # predictions, targets, m
 
         elif 'CE' in arc:  # unified CE (1 background + 80 classes)
             t = torch.zeros_like(pi[..., 0], dtype=torch.long)  # targets
+            t2 = torch.ones_like(pi[..., 0])
             if nb:
                 t[b, a, gj, gi] = tcls[i] + 1  # CE loss这里的实现：target的每个value是类别的index
-                # 所以可能不支持gt_score。
+                t2[b, a, gj, gi] = gt_score
                 # todo:可以loss*gt_score
                 # CE = nn.CrossEntropyLoss(reduction='none')设置reduction为none，以分别输出loss;
                 # lcls+= mean(CE*gt_score)
-            lcls += CE(pi[..., 4:].view(-1, model.nc + 1), t.view(-1))
+            lcls2 = CE2(pi[..., 4:].view(-1, model.nc + 1), t.view(-1))
+            lcls += torch.mean(lcls2.mul(t2.view(-1)))  # loss*gt_score
+            # lcls += CE(pi[..., 4:].view(-1, model.nc + 1), t.view(-1))
 
     lbox *= h['giou']
     lobj *= h['obj']

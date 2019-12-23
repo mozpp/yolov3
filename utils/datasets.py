@@ -432,7 +432,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         label_path = self.label_files[index]
 
         mosaic = True and self.augment  # load 4 images at a time into a mosaic (only during training)
-        if mosaic and random.random() < 0.1:  # modify: add random to mosaic
+        if mosaic and random.random() < 0.5:  # modify: add random to mosaic
             # Load mosaic
             img, labels = load_mosaic(self, index)
             h, w = img.shape[:2]
@@ -733,8 +733,14 @@ def random_affine(img, targets=(), degrees=10, translate=.1, scale=.1, shear=10)
     S[0, 1] = math.tan(random.uniform(-shear, shear) * math.pi / 180)  # x shear (deg)
     S[1, 0] = math.tan(random.uniform(-shear, shear) * math.pi / 180)  # y shear (deg)
 
+    # Scale xy
+    Sc = np.eye(3)
+    Sc[0, 0] = random.uniform(1 - scale, 1 + scale)
+    Sc[1, 1] = random.uniform(1 - scale, 1 + scale)
+
     # Combined rotation matrix
-    M = S @ T @ R  # ORDER IS IMPORTANT HERE!!
+    # M = S @ T @ R  # ORDER IS IMPORTANT HERE!!
+    M = Sc @ S @ T @ R  # modify: add xy scale
     changed = (border != 0) or (M != np.eye(3)).any()
     if changed:
         img = cv2.warpAffine(img, M[:2], dsize=(width, height), flags=cv2.INTER_AREA, borderValue=(128, 128, 128))
@@ -769,7 +775,7 @@ def random_affine(img, targets=(), degrees=10, translate=.1, scale=.1, shear=10)
         area = w * h
         area0 = (targets[:, 3] - targets[:, 1]) * (targets[:, 4] - targets[:, 2])
         ar = np.maximum(w / (h + 1e-16), h / (w + 1e-16))
-        i = (w > 4) & (h > 4) & (area / (area0 + 1e-16) > 0.1) & (ar < 10)
+        i = (w > 4) & (h > 4) & (area / (area0 + 1e-16) > 0.45 * Sc[0, 0] * Sc[1, 1] * s) & (ar < 10)  # modify: default area_ratio>0.1
         # i = (w > 1) & (h > 1) & (area / (area0 + 1e-16) > 0.1) & (ar < 10)
 
         targets = targets[i]

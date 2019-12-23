@@ -315,7 +315,8 @@ def load_darknet_weights(self, weights, cutoff=-1):
 
     # Establish cutoffs (load layers between 0 and cutoff. if cutoff = -1 all are loaded)
     file = Path(weights).name
-    if file == 'darknet53.conv.74':
+    # if file == 'darknet53.conv.74':
+    if file == 'darknet53.conv.74' or 'darknet53' in file:  # modify to adapt 0.25darknet53
         cutoff = 75
     elif file == 'yolov3-tiny.conv.15':
         cutoff = 15

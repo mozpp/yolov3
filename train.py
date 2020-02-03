@@ -37,12 +37,12 @@ hyp = {'giou': 3.31,  # giou loss gain
        'momentum': 0.949,  # SGD momentum
        'weight_decay': 0.000489,  # optimizer weight decay
        'fl_gamma': 0.5,  # focal loss gamma
-       'hsv_h': 0.5,  # image HSV-Hue augmentation (fraction) default=0.0103
-       'hsv_s': 0.5,  # image HSV-Saturation augmentation (fraction) default=0.691
-       'hsv_v': 0.5,  # image HSV-Value augmentation (fraction) default=0.433
+       'hsv_h': 0.0103,  # image HSV-Hue augmentation (fraction) default=0.0103
+       'hsv_s': 0.691,  # image HSV-Saturation augmentation (fraction) default=0.691
+       'hsv_v': 0.433,  # image HSV-Value augmentation (fraction) default=0.433
        'degrees': 1.43,  # image rotation (+/- deg) default=1.43
        'translate': 0.0663,  # image translation (+/- fraction) default=0.0663
-       'scale': 0.5,  # image scale (+/- gain) default=0.11
+       'scale': 0.11,  # image scale (+/- gain) default=0.11
        'shear': 0.384}  # image shear (+/- deg)
 
 # Overwrite hyp with hyp*.txt (optional)
@@ -152,7 +152,8 @@ def train():
             elif opt.transfer and p.shape[0] == nf:  # train (yolo biases+weights)
                 p.requires_grad = True
             else:  # freeze layer
-                p.requires_grad = False
+                p.requires_grad = False #todo:剪枝时开启prebias会AttributeError: 'NoneType' object has no attribute 'data'
+                # p.requires_grad = True
 
     # Scheduler https://github.com/ultralytics/yolov3/issues/238
     # lf = lambda x: 1 - x / epochs  # linear ramp to zero
@@ -185,18 +186,19 @@ def train():
                                 world_size=1,  # number of nodes for distributed training
                                 rank=0)  # distributed training node rank
         model = torch.nn.parallel.DistributedDataParallel(model, find_unused_parameters=True)
+        model.module_list = model.module.module_list  # module-list适应多gpu训练
+        model.module_defs = model.module.module_defs
         model.yolo_layers = model.module.yolo_layers  # move yolo layer indices to top level
 
     # 获得要剪枝的层
-    if opt.prune == 0:
-        print('normal sparse training ')
-        _, _, prune_idx = parse_module_defs(model)
-    elif opt.prune == 1:
-        print('shortcut sparse training')
-        _, _, prune_idx, _, _ = parse_module_defs2(model)
-    elif opt.prune == 2:
-        print('tiny yolo normal sparse traing')
-        _, _, prune_idx = parse_module_defs3(model)
+    if opt.prune == 1:
+        CBL_idx, _, prune_idx, shortcut_idx, _ = parse_module_defs2(model.module_defs)
+        if opt.sr:
+            print('shortcut sparse training')
+    elif opt.prune == 0:
+        CBL_idx, _, prune_idx = parse_module_defs(model.module_defs)
+        if opt.sr:
+            print('normal sparse training ')
 
     # Dataset
     dataset = LoadImagesAndLabels(train_path,
@@ -219,6 +221,10 @@ def train():
                                              pin_memory=True,
                                              collate_fn=dataset.collate_fn)
 
+    for idx in prune_idx:
+        bn_weights = gather_bn_weights(model.module_list, [idx])
+        tb_writer.add_histogram('before_train_perlayer_bn_weights/hist', bn_weights.numpy(), idx, bins='doane')
+
     # Start training
     model.nc = nc  # attach number of classes to model
     model.arc = opt.arc  # attach yolo architecture
@@ -233,7 +239,7 @@ def train():
     print('Starting %s for %g epochs...' % ('prebias' if opt.prebias else 'training', epochs))
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
-        print(('\n' + '%10s' * 9) % ('Epoch', 'gpu_mem', 'GIoU', 'obj', 'cls', 'total', 'targets', 'img_size', 'sum_γ'))
+        print(('\n' + '%10s' * 9) % ('Epoch', 'gpu_mem', 'GIoU', 'obj', 'cls', 'total', 'targets', 'img_size', 'sum_gamma'))
 
         # 稀疏化标志
         sr_flag = get_sr_flag(epoch, opt.sr)
@@ -252,7 +258,8 @@ def train():
             dataset.indices = random.choices(range(dataset.n), weights=image_weights, k=dataset.n)  # rand weighted idx
 
         mloss = torch.zeros(4).to(device)  # mean losses
-        mgamma = torch.zeros(1).to(device)  # mean gamma
+        mgamma = torch.zeros(1).to(device)  # mean gamma.
+        idx2mask = None
         pbar = tqdm(enumerate(dataloader), total=nb)  # progress bar
         for i, (
         imgs_ori, targets_ori, paths, _) in pbar:  # batch -------------------------------------------------------------
@@ -283,7 +290,8 @@ def train():
                     tb_writer.add_image(fname, cv2.imread(fname)[:, :, ::-1], dataformats='HWC')
 
             # Hyperparameter burn-in
-            n_burn = nb - 1  # min(nb // 5 + 1, 1000)  # number of burn-in batches
+            # n_burn = nb - 1  # min(nb // 5 + 1, 1000)  # number of burn-in batches
+            n_burn = min(nb // 5 + 1, 1000)
             if ni <= n_burn:
                 for m in model.named_modules():
                     if m[0].endswith('BatchNorm2d'):
@@ -313,10 +321,8 @@ def train():
                 loss.backward()
 
             # 对要剪枝层的γ参数稀疏化,就是给BN的gamma加L1 loss
-            if hasattr(model, 'module'):
-                sum_gamma = BNOptimizer.updateBN(sr_flag, model.module.module_list, opt.s, prune_idx)
-            else:
-                sum_gamma = BNOptimizer.updateBN(sr_flag, model.module_list, opt.s, prune_idx)
+            sp = opt.s if epoch <= opt.epochs * 0.5 else opt.s * 1
+            sum_gamma = BNOptimizer.updateBN(sr_flag, model.module_list, sp, prune_idx, idx2mask)
 
             # Accumulate gradient for x batches before optimizing
             if ni % accumulate == 0:
@@ -345,12 +351,13 @@ def train():
             # Calculate mAP (always test final epoch, skip first 10 if opt.nosave)
             if not (opt.notest or (opt.nosave and epoch < 10)) or final_epoch:
                 with torch.no_grad():
+                    # final epoch的conf_thres默认为0.001，其余的为0.1（0.1速度快）。所以打印的结果里final-epoch的AP高、F1低
                     results, maps = test.test(cfg,
                                               data,
                                               batch_size=batch_size,
                                               img_size=opt.img_size,
                                               model=model,
-                                              conf_thres=0.001 if final_epoch and epoch > 0 else 0.1,  # 0.1 for speed
+                                              conf_thres=0.1 if final_epoch and epoch > 0 else 0.1,  # 0.1 for speed
                                               save_json=final_epoch and epoch > 0 and 'coco.data' in data,
                                               mixed_precision=mixed_precision)
 
@@ -362,12 +369,13 @@ def train():
 
         # Write Tensorboard results
         if tb_writer:
-            x = list(mloss) + list(results) + list(mgamma)
+            x = list(mloss) + list(results)
             titles = ['GIoU', 'Objectness', 'Classification', 'Train loss',
-                      'Precision', 'Recall', 'mAP', 'F1', 'val GIoU', 'val Objectness', 'val Classification',
-                      'sum_gamma']
+                      'Precision', 'Recall', 'mAP', 'F1', 'val GIoU', 'val Objectness', 'val Classification']
             for xi, title in zip(x, titles):
                 tb_writer.add_scalar(title, xi, epoch)
+            bn_weights = gather_bn_weights(model.module_list, prune_idx)
+            tb_writer.add_histogram('bn_weights/hist', bn_weights.numpy(), epoch, bins='doane')
 
         # Update best mAP
         fitness = sum(results[4:])  # total loss
@@ -401,6 +409,10 @@ def train():
             del chkpt
 
         # end epoch ----------------------------------------------------------------------------------------------------
+
+    for idx in prune_idx:
+        bn_weights = gather_bn_weights(model.module_list, [idx])
+        tb_writer.add_histogram('after_train_perlayer_bn_weights/hist', bn_weights.numpy(), idx, bins='doane')
 
     # end training
     if len(opt.name) and not opt.prebias:
@@ -490,7 +502,7 @@ if __name__ == '__main__':
                         help='train with channel sparsity regularization')
     parser.add_argument('--s', type=float, default=0.001, help='scale sparse rate')
     parser.add_argument('--prune', type=int, default=0,
-                        help='0:normal prune or regular prune 1:shortcut prune 2:tiny prune')  #adapt normal prune first
+                        help='0:nomal prune 1:other prune')  #adapt normal prune first
     opt = parser.parse_args()
     opt.weights = last if opt.resume else opt.weights
     print(opt)

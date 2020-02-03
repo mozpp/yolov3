@@ -12,6 +12,8 @@ def detect(save_txt=False, save_img=True):
     webcam = source == '0' or source.startswith('rtsp') or source.startswith('http') or source.endswith('.txt')
 
     # Initialize
+    total_infer_time = 0
+    index = 0
     device = torch_utils.select_device(device='cpu' if ONNX_EXPORT else opt.device)
     if os.path.exists(out):
         shutil.rmtree(out)  # delete output folder
@@ -43,7 +45,7 @@ def detect(save_txt=False, save_img=True):
     # Export mode
     if ONNX_EXPORT:
         img = torch.zeros((1, 3) + img_size)  # (1, 3, 320, 192)
-        torch.onnx.export(model, img, 'weights/export.onnx', verbose=False, opset_version=11)
+        torch.onnx.export(model, img, 'weights/export.onnx', verbose=False, opset_version=9)
 
         # Validate exported model
         import onnx
@@ -85,6 +87,7 @@ def detect(save_txt=False, save_img=True):
         if opt.half:
             pred = pred.float()
 
+        t_bf_nms = time.time()
         # Apply NMS
         pred = non_max_suppression(pred, opt.conf_thres, opt.nms_thres)
 
@@ -120,7 +123,11 @@ def detect(save_txt=False, save_img=True):
                         label = '%s %.2f' % (classes[int(cls)], conf)
                         plot_one_box(xyxy, im0, label=label, color=colors[int(cls)])
 
-            print('%sDone. (%.3fs)' % (s, time.time() - t))
+            print(
+                '%sDone. (%.3fs) infer: %.6fs, nms: %.3fs' % (s, time.time() - t, t_bf_nms - t, time.time() - t_bf_nms))
+            total_infer_time += t_bf_nms - t
+            index += 1
+            print("mean infer time:", total_infer_time/index)
 
             # Stream results
             if view_img:

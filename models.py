@@ -111,7 +111,7 @@ def create_modules(module_defs, img_size, arc):
         module_list.append(modules)
         output_filters.append(filters)
 
-    return module_list, routs
+    return module_list, routs, hyperparams  # add return hyp to adapt prune
 
 
 class SwishImplementation(torch.autograd.Function):
@@ -227,8 +227,13 @@ class Darknet(nn.Module):
     def __init__(self, cfg, img_size=(416, 416), arc='default'):
         super(Darknet, self).__init__()
 
-        self.module_defs = parse_model_cfg(cfg)
-        self.module_list, self.routs = create_modules(self.module_defs, img_size, arc)
+        #modify to adapt prune cfg list
+        if isinstance(cfg, str):
+            self.module_defs = parse_model_cfg(cfg)
+        elif isinstance(cfg, list):
+            self.module_defs = cfg
+
+        self.module_list, self.routs, self.hyperparams = create_modules(self.module_defs, img_size, arc)
         self.yolo_layers = get_yolo_layers(self)
 
         # Darknet Header https://github.com/AlexeyAB/darknet/issues/2914#issuecomment-496675346

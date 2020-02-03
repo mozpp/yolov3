@@ -344,6 +344,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 try:
                     with open(file, 'r') as f:
                         l = np.array([x.split() for x in f.read().splitlines()], dtype=np.float32)
+                        # l = l[l[:, 4] > 0.3]  #todo:临时添加h约束，只加载大样本
                 except:
                     nm += 1  # print('missing labels for image %s' % self.img_files[i])  # file missing
                     continue
@@ -394,7 +395,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
         # Cache images into memory for faster training (~5GB)
         if cache_images and augment:  # if training
-            for i in tqdm(range(min(len(self.img_files), 1000)), desc='Reading images'):  # max 10k images
+            for i in tqdm(range(min(len(self.img_files), 7000)), desc='Reading images'):  # max 10k images
                 img_path = self.img_files[i]
                 img = cv2.imread(img_path)  # BGR
                 assert img is not None, 'Image Not Found ' + img_path
@@ -500,7 +501,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                     labels[:, 1] = 1 - labels[:, 1]
 
             # random up-down flip
-            ud_flip = True  # acitve for topview
+            ud_flip = False  # acitve for topview
             if ud_flip and random.random() < 0.5:
                 img = np.flipud(img)
                 if nL:
@@ -719,7 +720,7 @@ def random_affine(img, targets=(), degrees=10, translate=.1, scale=.1, shear=10)
     # Rotation and Scale
     R = np.eye(3)
     a = random.uniform(-degrees, degrees)
-    a += random.choice([-180, -90, 0, 90])  # add 90deg rotations to small rotations
+    # a += random.choice([-180, -90, 0, 90])  # add 90deg rotations to small rotations
     s = random.uniform(1 - scale, 1 + scale)
     R[:2] = cv2.getRotationMatrix2D(angle=a, center=(img.shape[1] / 2, img.shape[0] / 2), scale=s)
 
@@ -775,7 +776,7 @@ def random_affine(img, targets=(), degrees=10, translate=.1, scale=.1, shear=10)
         area = w * h
         area0 = (targets[:, 3] - targets[:, 1]) * (targets[:, 4] - targets[:, 2])
         ar = np.maximum(w / (h + 1e-16), h / (w + 1e-16))
-        i = (w > 4) & (h > 4) & (area / (area0 + 1e-16) > 0.45 * Sc[0, 0] * Sc[1, 1] * s) & (ar < 10)  # modify: default area_ratio>0.1
+        i = (w > 20) & (h > 30) & (area / (area0 + 1e-16) > 0.3 * Sc[0, 0] * Sc[1, 1] * s) & (ar < 10)  # modify: default area_ratio>0.1
         # i = (w > 1) & (h > 1) & (area / (area0 + 1e-16) > 0.1) & (ar < 10)
 
         targets = targets[i]

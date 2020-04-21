@@ -320,10 +320,10 @@ class FocalLoss(nn.Module):
 
 
 def compute_loss(p, targets, model, mixed_precision):  # predictions, targets, model
-    #targets:[batch_idx,cls, gt_score,x,y,w,h]
+    # targets:[batch_idx,cls, gt_score,x,y,w,h]
     ft = torch.cuda.FloatTensor if p[0].is_cuda else torch.Tensor
     lcls, lbox, lobj = ft([0]), ft([0]), ft([0])
-    tcls, tbox, indices, anchor_vec= build_targets(model, targets, mixed_precision)
+    tcls, tbox, indices, anchor_vec = build_targets(model, targets, mixed_precision)
     h = model.hyp  # hyperparameters
     arc = model.arc  # # (default, uCE, uBCE) detection architectures
 
@@ -357,7 +357,7 @@ def compute_loss(p, targets, model, mixed_precision):  # predictions, targets, m
             pbox = torch.cat((pxy, torch.exp(ps[:, 2:4]).clamp(max=1E4) * anchor_vec[i]), 1)  # predicted box
             giou = bbox_iou(pbox.t(), tbox[i], x1y1x2y2=False, GIoU=True)  # giou computation
             # lbox += (1.0 - giou).mean()  # giou loss
-            lbox += ((1.0 - giou)*gt_score).mean()  # giou loss, 乘gt_score
+            lbox += ((1.0 - giou) * gt_score).mean()  # giou loss, 乘gt_score
 
             if 'default' in arc and model.nc > 1:  # cls loss (only if multiple classes)
                 t = torch.zeros_like(ps[:, 5:])  # targets, target_size is related to gt
@@ -419,7 +419,9 @@ def build_targets(model, targets, mixed_precision):
     multi_gpu = type(model) in (nn.parallel.DataParallel, nn.parallel.DistributedDataParallel)
     for i in model.yolo_layers:
         # get number of grid points and anchor vec for this yolo layer
-        if multi_gpu:
+        if i=='no_module_list_mode':
+            ng, anchor_vec = model.layer_yolo.ng, model.layer_yolo.anchor_vec
+        elif multi_gpu:
             ng, anchor_vec = model.module.module_list[i].ng, model.module.module_list[i].anchor_vec
         else:
             ng, anchor_vec = model.module_list[i].ng, model.module_list[i].anchor_vec
@@ -449,16 +451,16 @@ def build_targets(model, targets, mixed_precision):
 
         # Indices
         # b, c = t[:, :2].long().t()  # target image, class
-        b, c= t[:, :2].long().t()  # target image, class, gt_score
+        b, c = t[:, :2].long().t()  # target image, class, gt_score
         if mixed_precision:
-            gt_score=t[:, 2].half().t()  # target image, class, gt_score
+            gt_score = t[:, 2].half().t()  # target image, class, gt_score
         else:
             gt_score = t[:, 2].t()  # target image, class, gt_score
         # gxy = t[:, 2:4] * ng  # grid x, y
         gxy = t[:, 3:5] * ng  # grid x, y for target contain gt_score
         gi, gj = gxy.long().t()  # grid x, y indices
-        indices.append((b, a, gj, gi, gt_score)) #todo: mixup
-        #indices.append((b, a, gj, gi,gt_score))
+        indices.append((b, a, gj, gi, gt_score))  # todo: mixup
+        # indices.append((b, a, gj, gi,gt_score))
 
         # GIoU
         gxy -= gxy.floor()  # xy
@@ -719,7 +721,7 @@ def kmeans_targets(path='../coco/trainvalno5k.txt', n=9, img_size=416):  # from 
     from scipy import cluster
 
     # Get label wh
-    dataset = LoadImagesAndLabels(path, augment=True, rect=True, cache_labels=True) #todo: modify for gt_score
+    dataset = LoadImagesAndLabels(path, augment=True, rect=True, cache_labels=True)  # todo: modify for gt_score
     for s, l in zip(dataset.shapes, dataset.labels):
         l[:, [1, 3]] *= s[0]  # normalized to pixels
         l[:, [2, 4]] *= s[1]
@@ -851,10 +853,10 @@ def plot_images(imgs, targets, paths=None, fname='images.jpg'):
     # Plots training images overlaid with targets
     imgs = imgs.cpu().numpy()
     targets = targets.cpu().numpy()
-    gt_socre=targets[:,[0,1,2]] # index,cls,gt_score
-    targets= np.delete(targets,2,1) # delete gt_score
+    gt_socre = targets[:, [0, 1, 2]]  # index,cls,gt_score
+    targets = np.delete(targets, 2, 1)  # delete gt_score
     # targets = targets[targets[:, 1] == 21]  # plot only one class
-    colors={}
+    colors = {}
 
     fig = plt.figure(figsize=(10, 10))
     bs, _, h, w = imgs.shape  # batch size, _, height, width
@@ -863,7 +865,7 @@ def plot_images(imgs, targets, paths=None, fname='images.jpg'):
 
     for i in range(bs):
         boxes = xywh2xyxy(targets[targets[:, 0] == i, 2:6]).T
-        gt_scores=gt_socre[gt_socre[:,0]==i]
+        gt_scores = gt_socre[gt_socre[:, 0] == i]
         boxes[[0, 2]] *= w
         boxes[[1, 3]] *= h
         plt.subplot(ns, ns, i + 1).imshow(imgs[i].transpose(1, 2, 0))

@@ -6,6 +6,7 @@ from torch.utils.data import DataLoader
 from models import *
 from utils.datasets import *
 from utils.utils import *
+import model_ppn_yolo
 
 
 def test(cfg,
@@ -18,14 +19,18 @@ def test(cfg,
          nms_thres=0.5,
          save_json=False,
          model=None,
-         mixed_precision=False):
+         mixed_precision=False,
+         anchors=None):
     # Initialize/load model and set device
     if model is None:
         device = torch_utils.select_device(opt.device, batch_size=batch_size)
         verbose = True
 
         # Initialize model
-        model = Darknet(cfg, img_size).to(device)
+        if cfg is None:
+            model = model_ppn_yolo.resnet18_pose_and_det(anchors, arc=opt.arc).to(device)
+        else:
+            model = Darknet(cfg, img_size).to(device)
 
         # Load weights
         attempt_download(weights)

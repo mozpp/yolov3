@@ -191,6 +191,8 @@ class ResNetTwoHead(nn.Module):
 
     def forward(self, x):
         img_size = x.shape[-2:]
+        output = []
+
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
@@ -210,15 +212,16 @@ class ResNetTwoHead(nn.Module):
 
         x_pose = x_pose.permute(0, 2, 3, 1)
         # x_det = x_det.permute(0, 2, 3, 1)
-        return x_pose, x_det
+        output.append(x_det)
+        return x_pose, output
 
 
-def resnet18_pose_and_det(anchors, net_state_dict=None):
-    model = ResNetTwoHead(BasicBlock, [2, 2, 2, 2], anchors)
-    if net_state_dict is None:
-        print('Loading resnet18 pretrain weight...')
-        print('debug, 不加载预训练模型')
-        # model.load_state_dict(torch.load('./model/pretrain_weight/resnet18-5c106cde.pth'))
+def resnet18_pose_and_det(anchors, arc, net_state_dict=None):
+    model = ResNetTwoHead(BasicBlock, [2, 2, 2, 2], anchors, 1, arc)
+    # if net_state_dict is None:
+    #     print('Loading resnet18 pretrain weight...')
+    #     print('debug, 不加载预训练模型')
+    #     model.load_state_dict(torch.load('./model/pretrain_weight/resnet18-5c106cde.pth'))
     # 替换fc输出头，替换为pose_head
     model.fc = nn.Sequential(nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1),
                              nn.BatchNorm2d(512),

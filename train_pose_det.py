@@ -33,7 +33,7 @@ hyp = {'giou': 3.31,  # giou loss gain
        'obj': 52.0,  # obj loss gain (*=img_size/320 if img_size != 320)
        'obj_pw': 1.0,  # obj BCELoss positive_weight
        'iou_t': 0.213,  # iou training threshold
-       'lr0': 0.001,  # initial learning rate (SGD=1E-3, Adam=9E-5) default=0.00261
+       'lr0': 0.002,  # initial learning rate (SGD=1E-3, Adam=9E-5) default=0.00261
        'lrf': -4.,  # final LambdaLR learning rate = lr0 * (10 ** lrf)
        'momentum': 0.949,  # SGD momentum
        'weight_decay': 0.000489,  # optimizer weight decay
@@ -45,7 +45,7 @@ hyp = {'giou': 3.31,  # giou loss gain
        'translate': 0.0663,  # image translation (+/- fraction) default=0.0663
        'scale': 0.11,  # image scale (+/- gain) default=0.11
        'shear': 0.384,  # image shear (+/- deg)
-       'anchors': np.array([100, 100, 200, 200, 300, 300])}
+       'anchors': np.array([59, 111, 152, 148, 133, 258])}
 
 # Overwrite hyp with hyp*.txt (optional)
 f = glob.glob('hyp*.txt')
@@ -98,6 +98,7 @@ def train():
     else:
         model = model_ppn_yolo.resnet18_pose_and_det(anchors, arc=opt.arc).to(device)
     model.yolo_layers = ['no_module_list_mode']
+    # print(model.__class__.__name__)
 
     # Optimizer
     pg0, pg_fixed= [], []  # optimizer parameter groups
@@ -175,7 +176,7 @@ def train():
         model = torch.nn.parallel.DistributedDataParallel(model, find_unused_parameters=True)
         # model.module_list = model.module.module_list  # module-list适应多gpu训练
         # model.module_defs = model.module.module_defs
-        # model.yolo_layers = model.module.yolo_layers  # move yolo layer indices to top level
+        model.yolo_layers = model.module.yolo_layers  # move yolo layer indices to top level
 
     # Dataset
     dataset = LoadImagesAndLabels(train_path,
@@ -281,6 +282,9 @@ def train():
 
             # Compute loss
             loss, loss_items = compute_loss(pred_det, targets, model, mixed_precision)
+            # 多gpu时，make sure all `forward` function outputs participate in calculating loss.
+            loss_pose_placeholder = torch.sum(pred_pose-pred_pose)
+            loss = loss + loss_pose_placeholder*0
             if not torch.isfinite(loss):
                 print('WARNING: non-finite loss, ending training ', loss_items)
                 return results

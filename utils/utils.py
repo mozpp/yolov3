@@ -17,6 +17,10 @@ from . import torch_utils  # , google_utils
 
 matplotlib.rc('font', **{'size': 11})
 
+norm_with_mean_std = True
+if norm_with_mean_std:
+    print('\033[1;35m when load images, norm with mean and std. \033[0m')
+
 # Set printoptions
 torch.set_printoptions(linewidth=320, precision=5, profile='long')
 np.set_printoptions(linewidth=320, formatter={'float_kind': '{:11.5g}'.format})  # format short g, %precision=5
@@ -419,8 +423,10 @@ def build_targets(model, targets, mixed_precision):
     multi_gpu = type(model) in (nn.parallel.DataParallel, nn.parallel.DistributedDataParallel)
     for i in model.yolo_layers:
         # get number of grid points and anchor vec for this yolo layer
-        if i=='no_module_list_mode':
+        if i == 'no_module_list_mode' and not multi_gpu:
             ng, anchor_vec = model.layer_yolo.ng, model.layer_yolo.anchor_vec
+        elif i == 'no_module_list_mode' and multi_gpu:
+            ng, anchor_vec = model.module.layer_yolo.ng, model.module.layer_yolo.anchor_vec
         elif multi_gpu:
             ng, anchor_vec = model.module.module_list[i].ng, model.module.module_list[i].anchor_vec
         else:
@@ -849,6 +855,13 @@ def plot_wh_methods():  # from utils.utils import *; plot_wh_methods()
     fig.savefig('comparison.png', dpi=200)
 
 
+def unnorm_wtih_mean_std(img):
+    img[0] = img[0] * 0.229 + 0.485
+    img[1] = img[1] * 0.224 + 0.456
+    img[2] = img[2] * 0.225 + 0.406
+    return img
+
+
 def plot_images(imgs, targets, paths=None, fname='images.jpg'):
     # Plots training images overlaid with targets
     imgs = imgs.cpu().numpy()
@@ -868,6 +881,8 @@ def plot_images(imgs, targets, paths=None, fname='images.jpg'):
         gt_scores = gt_socre[gt_socre[:, 0] == i]
         boxes[[0, 2]] *= w
         boxes[[1, 3]] *= h
+        if norm_with_mean_std:
+            imgs[i] = unnorm_wtih_mean_std(imgs[i])
         plt.subplot(ns, ns, i + 1).imshow(imgs[i].transpose(1, 2, 0))
         plt.plot(boxes[[0, 2, 2, 0, 0]], boxes[[1, 1, 3, 3, 1]], '.-')
         for i_ in range(boxes.shape[1]):

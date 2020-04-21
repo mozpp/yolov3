@@ -77,7 +77,10 @@ def test(cfg,
             plot_images(imgs=imgs, targets=targets, paths=paths, fname='test_batch0.jpg')
 
         # Run model
-        inf_out, train_out = model(imgs)  # inference and training outputs
+        if model.__class__.__name__ == 'ResNetTwoHead':  # ResNetTwoHead为mozi定义的网络的类名
+            pose_out, inf_out, train_out = model(imgs)  # 后两项为detection的infer-output、训练-output
+        else:
+            inf_out, train_out = model(imgs)  # inference and training outputs
 
         # Compute loss
         if hasattr(model, 'hyp'):  # if model has loss hyperparameters

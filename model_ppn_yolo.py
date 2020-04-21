@@ -213,7 +213,12 @@ class ResNetTwoHead(nn.Module):
         x_pose = x_pose.permute(0, 2, 3, 1)
         # x_det = x_det.permute(0, 2, 3, 1)
         output.append(x_det)
-        return x_pose, output
+
+        if self.training:
+            return x_pose, output
+        else:
+            io, p = list(zip(*output))  # inference output, training output
+            return x_pose, torch.cat(io, 1), p
 
 
 def resnet18_pose_and_det(anchors, arc, net_state_dict=None):

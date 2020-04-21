@@ -16,6 +16,7 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 
 from utils.utils import xyxy2xywh, xywh2xyxy
+from utils.utils import norm_with_mean_std
 
 img_formats = ['.bmp', '.jpg', '.jpeg', '.png', '.tif', '.dng']
 vid_formats = ['.mov', '.avi', '.mp4', '.mkv']
@@ -25,6 +26,7 @@ for orientation in ExifTags.TAGS.keys():
     if ExifTags.TAGS[orientation] == 'Orientation':
         break
 
+
 def random_interp(img, size, interp=None):
     interp_method = [
         cv2.INTER_NEAREST,
@@ -32,7 +34,7 @@ def random_interp(img, size, interp=None):
         cv2.INTER_AREA,
         cv2.INTER_CUBIC,
         cv2.INTER_LANCZOS4,
-        ]
+    ]
     if not interp or interp not in interp_method:
         interp = interp_method[random.randint(0, len(interp_method) - 1)]
     h, w, _ = img.shape
@@ -123,6 +125,10 @@ class LoadImages:  # for inference
         img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB
         img = np.ascontiguousarray(img, dtype=np.float16 if self.half else np.float32)  # uint8 to fp16/fp32
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
+        if norm_with_mean_std:
+            img[0] = (img[0] - 0.485) / 0.229
+            img[1] = (img[1] - 0.456) / 0.224
+            img[2] = (img[2] - 0.406) / 0.225
 
         # cv2.imwrite(path + '.letterbox.jpg', 255 * img.transpose((1, 2, 0))[:, :, ::-1])  # save letterbox image
         return path, img, img0, self.cap
@@ -265,6 +271,10 @@ class LoadStreams:  # multiple IP or RTSP cameras
         img = img[:, :, :, ::-1].transpose(0, 3, 1, 2)  # BGR to RGB
         img = np.ascontiguousarray(img, dtype=np.float16 if self.half else np.float32)  # uint8 to fp16/fp32
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
+        if norm_with_mean_std:
+            img[0] = (img[0] - 0.485) / 0.229
+            img[1] = (img[1] - 0.456) / 0.224
+            img[2] = (img[2] - 0.406) / 0.225
 
         return self.sources, img, img0, None
 
@@ -273,7 +283,8 @@ class LoadStreams:  # multiple IP or RTSP cameras
 
 
 class LoadImagesAndLabels(Dataset):  # for training/testing
-    def __init__(self, path, img_size=416, batch_size=16, augment=False, mix_up=False, hyp=None, rect=True, image_weights=False,
+    def __init__(self, path, img_size=416, batch_size=16, augment=False, mix_up=False, hyp=None, rect=True,
+                 image_weights=False,
                  cache_labels=False, cache_images=False):
         path = str(Path(path))  # os-agnostic
         with open(path, 'r') as f:
@@ -295,8 +306,9 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         self.rect = False if image_weights else rect
 
         # Define labels
-        self.label_files = [x.replace('images', 'labels').replace('JPEGImages','yolo_labels').replace(os.path.splitext(x)[-1], '.txt')
-                            for x in self.img_files]
+        self.label_files = [
+            x.replace('images', 'labels').replace('JPEGImages', 'yolo_labels').replace(os.path.splitext(x)[-1], '.txt')
+            for x in self.img_files]
 
         # Rectangular Training  https://github.com/ultralytics/yolov3/issues/232
         if self.rect:
@@ -471,7 +483,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
             # Augment imagespace
             g = 0.0 if mosaic else 1.0  # do not augment mosaics
-            g=1
+            g = 1
             hyp = self.hyp
             img, labels = random_affine(img, labels,
                                         degrees=hyp['degrees'] * g,
@@ -508,7 +520,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                     labels[:, 2] = 1 - labels[:, 2]
 
         # labels_out = torch.zeros((nL, 6)) # todo: add gt_score to labels_out(i.e. targets)
-        labels_out = np.zeros((nL, 7),dtype='float32')  # add gt_score to labels_out(i.e. targets)
+        labels_out = np.zeros((nL, 7), dtype='float32')  # add gt_score to labels_out(i.e. targets)
         if nL:
             # labels_out[:, 1:] = torch.from_numpy(labels)
 
@@ -520,15 +532,19 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
         img = np.ascontiguousarray(img, dtype=np.float32)  # uint8 to float32
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
+        if norm_with_mean_std:
+            img[0] = (img[0] - 0.485) / 0.229
+            img[1] = (img[1] - 0.456) / 0.224
+            img[2] = (img[2] - 0.406) / 0.225
 
         return img, labels_out, img_path, (h, w)
 
     def __getitem__(self, index):
         img_ori, labels_out_ori, img_path, (h, w) = self.augment_collection(index)
 
-        #mixup, mix_up
+        # mixup, mix_up
         if random.random() < 0.5 and self.augment and self.mix_up:
-        # if 0:
+            # if 0:
             index_mix = random.randint(0, len(self.label_files) - 2)
             index_mix = index_mix + 1 if index_mix == index else index_mix
             img_mix, labels_out_mix, _, _ = self.augment_collection(index_mix)
@@ -536,14 +552,14 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             img = lam * img_ori + (1 - lam) * img_mix
             labels_out_ori[:, 2] = lam
             labels_out_mix[:, 2] = 1 - lam
-            labels_out=np.concatenate([labels_out_ori,labels_out_mix])
+            labels_out = np.concatenate([labels_out_ori, labels_out_mix])
         else:
             img, labels_out = img_ori, labels_out_ori
 
         return torch.from_numpy(img), torch.from_numpy(labels_out), img_path, (h, w)
 
     @staticmethod
-    def collate_fn(batch): # 静态方法：不需要自身对象的self和自身类的cls参数，调用无需实例化
+    def collate_fn(batch):  # 静态方法：不需要自身对象的self和自身类的cls参数，调用无需实例化
         img, label, path, hw = list(zip(*batch))  # transposed
         for i, l in enumerate(label):
             l[:, 0] = i  # add target image index for build_targets(), 为label添加batch里的index
@@ -636,7 +652,7 @@ def load_mosaic(self, index):
                 labels[:, 3] = w * (x[:, 1] + x[:, 3] / 2) + padw
                 labels[:, 4] = h * (x[:, 2] + x[:, 4] / 2) + padh
 
-                labels4.append(labels) # fix issue #548
+                labels4.append(labels)  # fix issue #548
     if len(labels4):
         labels4 = np.concatenate(labels4, 0)
 
@@ -654,7 +670,7 @@ def load_mosaic(self, index):
         labels4[:, 1:] -= a
 
         # # reject warped points outside of image
-        labels4_tmp=labels4.copy()
+        labels4_tmp = labels4.copy()
         area0 = (labels4[:, 3] - labels4[:, 1]) * (labels4[:, 4] - labels4[:, 2])
         labels4_tmp[:, [2, 4]] = labels4_tmp[:, [2, 4]].clip(0, s)
         labels4_tmp[:, [1, 3]] = labels4_tmp[:, [1, 3]].clip(0, s)
@@ -776,7 +792,8 @@ def random_affine(img, targets=(), degrees=10, translate=.1, scale=.1, shear=10)
         area = w * h
         area0 = (targets[:, 3] - targets[:, 1]) * (targets[:, 4] - targets[:, 2])
         ar = np.maximum(w / (h + 1e-16), h / (w + 1e-16))
-        i = (w > 20) & (h > 30) & (area / (area0 + 1e-16) > 0.3 * Sc[0, 0] * Sc[1, 1] * s) & (ar < 10)  # modify: default area_ratio>0.1
+        i = (w > 20) & (h > 30) & (area / (area0 + 1e-16) > 0.3 * Sc[0, 0] * Sc[1, 1] * s) & (
+                    ar < 10)  # modify: default area_ratio>0.1
         # i = (w > 1) & (h > 1) & (area / (area0 + 1e-16) > 0.1) & (ar < 10)
 
         targets = targets[i]
@@ -877,6 +894,7 @@ def imagelist2folder(path='data/coco_64img.txt'):  # from utils.datasets import 
         for line in f.read().splitlines():
             os.system('cp "%s" %s' % (line, path[:-4]))
             print(line)
+
 
 def create_folder(path='./new_folder'):
     # Create folder

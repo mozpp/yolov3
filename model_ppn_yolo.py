@@ -153,17 +153,20 @@ class ResNetTwoHead(nn.Module):
         self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
         self.avgpool = nn.AvgPool2d(7, stride=1)
         self.fc = nn.Linear(512 * block.expansion, num_classes)
-        # # 固定for循环以上的参数
-        # for p in self.parameters():
-        #     p.requires_grad = False
         self.layer_det = nn.Sequential(nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1),
                                        nn.BatchNorm2d(512),
                                        nn.LeakyReLU(negative_slope=0.1),
                                        nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1),
+                                       nn.BatchNorm2d(512),
                                        nn.LeakyReLU(negative_slope=0.1),
-                                       nn.Conv2d(512, 18, kernel_size=1, stride=1, padding=0))
+                                       nn.Conv2d(512, 256, kernel_size=3, stride=1, padding=1),
+                                       nn.BatchNorm2d(256),
+                                       nn.LeakyReLU(negative_slope=0.1),
+                                       nn.Conv2d(256, 18, kernel_size=1, stride=1, padding=0))
         self.layer_yolo = YOLOLayer(anchors, num_classes, arc)
-
+        # # 固定for循环以上的参数
+        # for p in self.parameters():
+        #     p.requires_grad = False
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels

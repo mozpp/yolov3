@@ -19,7 +19,7 @@ matplotlib.rc('font', **{'size': 11})
 
 norm_with_mean_std = True
 if norm_with_mean_std:
-    print('\033[1;35m when load images, norm with mean and std. \033[0m')
+    print('\033[1;35m when load images, enable norm with mean and std. \033[0m')
 
 # Set printoptions
 torch.set_printoptions(linewidth=320, precision=5, profile='long')

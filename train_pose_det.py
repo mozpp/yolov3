@@ -12,7 +12,7 @@ from utils.utils import *
 from utils.prune_utils import *
 import model_ppn_yolo
 
-mixed_precision = True
+mixed_precision = False
 try:  # Mixed precision training https://github.com/NVIDIA/apex
     from apex import amp
 except:
@@ -33,7 +33,7 @@ hyp = {'giou': 3.31,  # giou loss gain
        'obj': 52.0,  # obj loss gain (*=img_size/320 if img_size != 320)
        'obj_pw': 1.0,  # obj BCELoss positive_weight
        'iou_t': 0.213,  # iou training threshold
-       'lr0': 0.002,  # initial learning rate (SGD=1E-3, Adam=9E-5) default=0.00261
+       'lr0': 0.001,  # initial learning rate (SGD=1E-3, Adam=9E-5) default=0.00261
        'lrf': -4.,  # final LambdaLR learning rate = lr0 * (10 ** lrf)
        'momentum': 0.949,  # SGD momentum
        'weight_decay': 0.000489,  # optimizer weight decay
@@ -91,19 +91,25 @@ def train():
     checkpoint = {}
 
     # 加载模型
-    if os.path.exists(opt.weights):
-        checkpoint = torch.load(opt.weights)
+    assert os.path.exists(opt.weights)
+    checkpoint = torch.load(opt.weights)
+    try:
         model = model_ppn_yolo.resnet18_pose_and_det(anchors, arc=opt.arc,
                                                      net_state_dict=checkpoint['net_state_dict']).to(device)
-    else:
-        model = model_ppn_yolo.resnet18_pose_and_det(anchors, arc=opt.arc).to(device)
+    except:
+        model = model_ppn_yolo.resnet18_pose_and_det(anchors, arc=opt.arc,
+                                                     net_state_dict=checkpoint['model']).to(device)
+    # net_state_dict=checkpoint['model']
+    # else:
+    #     model = model_ppn_yolo.resnet18_pose_and_det(anchors, arc=opt.arc).to(device)
     model.yolo_layers = ['no_module_list_mode']
     # print(model.__class__.__name__)
 
     # Optimizer
-    pg0, pg_fixed= [], []  # optimizer parameter groups
+    pg0, pg_fixed = [], []  # optimizer parameter groups
     for k, v in dict(model.named_parameters()).items():
         if 'layer_det' not in k:
+            v.requires_grad = False
             pg_fixed += [v]
         else:
             pg0 += [v]  # parameter group 0
@@ -213,8 +219,25 @@ def train():
     print('Starting %s for %g epochs...' % ('prebias' if opt.prebias else 'training', epochs))
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
+        # fix bn
+        multi_gpu = type(model) in (nn.parallel.DataParallel, nn.parallel.DistributedDataParallel)
+        if multi_gpu:
+            for module in model.module.modules():
+                if isinstance(module, torch.nn.modules.BatchNorm2d):
+                    module.eval()
+            for module in model.module.layer_det.modules():
+                if isinstance(module, torch.nn.modules.BatchNorm2d):
+                    module.train()
+        else:
+            for module in model.modules():
+                if isinstance(module, torch.nn.modules.BatchNorm2d):
+                    module.eval()
+            for module in model.layer_det.modules():
+                if isinstance(module, torch.nn.modules.BatchNorm2d):
+                    module.train()
+
         print(('\n' + '%10s' * 9) % (
-        'Epoch', 'gpu_mem', 'GIoU', 'obj', 'cls', 'total', 'targets', 'img_size', 'sum_gamma'))
+            'Epoch', 'gpu_mem', 'GIoU', 'obj', 'cls', 'total', 'targets', 'img_size', 'sum_gamma'))
 
         # 稀疏化标志
         sr_flag = get_sr_flag(epoch, opt.sr)
@@ -274,8 +297,9 @@ def train():
                         m[1].momentum = 1 - i / n_burn * 0.99  # BatchNorm2d momentum falls from 1 - 0.01
                 g = (i / n_burn) ** 4  # gain rises from 0 - 1
                 for x in optimizer.param_groups:
-                    x['lr'] = hyp['lr0'] * g
-                    x['weight_decay'] = hyp['weight_decay'] * g
+                    if x['lr'] > 0:
+                        x['lr'] = hyp['lr0'] * g
+                        x['weight_decay'] = hyp['weight_decay'] * g
 
             # Run model
             pred_pose, pred_det = model(imgs)
@@ -283,8 +307,8 @@ def train():
             # Compute loss
             loss, loss_items = compute_loss(pred_det, targets, model, mixed_precision)
             # 多gpu时，make sure all `forward` function outputs participate in calculating loss.
-            loss_pose_placeholder = torch.sum(pred_pose-pred_pose)
-            loss = loss + loss_pose_placeholder*0
+            loss_pose_placeholder = torch.sum(pred_pose - pred_pose)
+            loss = loss #+ loss_pose_placeholder * 0
             if not torch.isfinite(loss):
                 print('WARNING: non-finite loss, ending training ', loss_items)
                 return results

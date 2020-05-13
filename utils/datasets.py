@@ -541,7 +541,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
     def __getitem__(self, index):
         img_ori, labels_out_ori, img_path, (h, w) = self.augment_collection(index)
-
+        # print('debug', img_path)
         # mixup, mix_up
         if random.random() < 0.5 and self.augment and self.mix_up:
             # if 0:

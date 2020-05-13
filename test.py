@@ -77,7 +77,8 @@ def test(cfg,
             plot_images(imgs=imgs, targets=targets, paths=paths, fname='test_batch0.jpg')
 
         # Run model
-        if model.__class__.__name__ == 'ResNetTwoHead':  # ResNetTwoHead为mozi定义的网络的类名
+        # if model.__class__.__name__ == 'ResNetTwoHead':  # ResNetTwoHead为mozi定义的网络的类名
+        if model.yolo_layers[0] == 'no_module_list_mode':  # no_module_list_mode对应mozi定义的网络
             pose_out, inf_out, train_out = model(imgs)  # 后两项为detection的infer-output、训练-output
         else:
             inf_out, train_out = model(imgs)  # inference and training outputs
